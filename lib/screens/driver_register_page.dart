@@ -15,7 +15,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
   final _passwordController = TextEditingController();
   final _licenseController = TextEditingController();
   final _plateController = TextEditingController();
-  final _routeController = TextEditingController();
+  String _selectedRoute = 'ANGELES - SAN FERNANDO';
   bool _isLoading = false;
 
   @override
@@ -26,7 +26,6 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
     _passwordController.dispose();
     _licenseController.dispose();
     _plateController.dispose();
-    _routeController.dispose();
     super.dispose();
   }
 
@@ -38,7 +37,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
     final password = _passwordController.text.trim();
     final license = _licenseController.text.trim();
     final plate = _plateController.text.trim();
-    final route = _routeController.text.trim();
+    final route = _selectedRoute;
 
     if (name.isEmpty ||
         contact.isEmpty ||
@@ -46,7 +45,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
         password.isEmpty ||
         license.isEmpty ||
         plate.isEmpty ||
-        route.isEmpty) {
+        _selectedRoute.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('All fields are required for driver registration.'),
@@ -166,11 +165,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
                   icon: Icons.directions_bus,
                 ),
                 const SizedBox(height: 16),
-                _buildField(
-                  controller: _routeController,
-                  label: 'Route',
-                  icon: Icons.map,
-                ),
+                _buildRouteDropdown(),
                 const SizedBox(height: 24),
                 FilledButton(
                   onPressed: _isLoading ? null : _submit,
@@ -209,6 +204,32 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
       keyboardType: keyboardType,
       obscureText: obscureText,
       decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
+    );
+  }
+
+  Widget _buildRouteDropdown() {
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: 'Route',
+        prefixIcon: const Icon(Icons.map),
+        border: const OutlineInputBorder(),
+      ),
+      child: DropdownButton<String>(
+        value: _selectedRoute,
+        underline: const SizedBox(),
+        isExpanded: true,
+        items: const [
+          DropdownMenuItem(
+            value: 'ANGELES - SAN FERNANDO',
+            child: Text('ANGELES - SAN FERNANDO'),
+          ),
+        ],
+        onChanged: (value) {
+          if (value != null) {
+            setState(() => _selectedRoute = value);
+          }
+        },
+      ),
     );
   }
 }

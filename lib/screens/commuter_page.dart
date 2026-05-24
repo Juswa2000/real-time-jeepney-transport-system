@@ -1,49 +1,622 @@
 import 'package:flutter/material.dart';
-import '../app_state.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
-class CommuterPage extends StatelessWidget {
+// Real-Time Commuter Dashboard for "Real-Time Jeepney Transport Support Platform"
+// - Real-time jeepney markers on map
+// - Estimated waiting time based on active drivers
+// - Live driver list with status updates
+// - Notifications for demand changes
+// - Refresh functionality for manual updates
+
+class CommuterPage extends StatefulWidget {
   const CommuterPage({super.key});
 
   @override
+  State<CommuterPage> createState() => _CommuterPageState();
+}
+
+class _CommuterPageState extends State<CommuterPage> {
+  final _firestore = FirebaseFirestore.instance;
+  final _auth = FirebaseAuth.instance;
+  final MapController _mapController = MapController();
+  
+  final List<String> _notifications = [];
+  String _prevDemand = 'LOW';
+
+  @override
+  void initState() {
+    super.initState();
+    _addNotification('Welcome to Commuter Portal! Tracking jeepneys for you.');
+  }
+
+  void _addNotification(String msg) {
+    if (mounted) {
+      setState(() {
+        _notifications.insert(0, '[${DateTime.now().toString().split('.')[0]}] $msg');
+        if (_notifications.length > 10) _notifications.removeLast();
+      });
+    }
+  }
+
+  // Calculate estimated waiting time based on number of active drivers
+  int _calculateWaitingTime(int activeDrivers) {
+    if (activeDrivers == 0) return 20;
+    if (activeDrivers <= 2) return 12;
+    if (activeDrivers <= 4) return 8;
+    if (activeDrivers <= 6) return 5;
+    return 3;
+  }
+
+  // Determine route status based on active drivers and passenger demand
+  String _determineRouteStatus(int activeDrivers, String demand) {
+    if (activeDrivers == 0) return 'No Trips';
+    if (activeDrivers < 2 || demand == 'HIGH') return 'Limited';
+    return 'Available';
+  }
+
+  // Build map markers for each active driver
+  List<Marker> _buildDriverMarkers(List<DocumentSnapshot> drivers) {
+    return drivers.map((doc) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) return null;
+      final lat = (data['latitude'] as num?)?.toDouble();
+      final lon = (data['longitude'] as num?)?.toDouble();
+      final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
+      final statusValue = (data['status'] as String?)?.toLowerCase();
+      final status = statusValue ?? (gpsEnabled ? 'operating' : 'offline');
+      final plateNumber = data['plateNumber'] as String? ?? 'Unknown';
+      final fullName = data['fullName'] as String? ?? 'Driver';
+      final statusColor = (data['statusColor'] as String?)?.toLowerCase() ?? 'blue';
+      final markerColor = statusColor == 'green'
+          ? Colors.green
+          : statusColor == 'orange'
+              ? Colors.orange
+              : statusColor == 'red'
+                  ? Colors.red
+                  : Colors.blue;
+
+      // Only show drivers with valid GPS data
+      if (!gpsEnabled || lat == null || lon == null) return null;
+
+      return Marker(
+        point: LatLng(lat, lon),
+        width: 80,
+        height: 80,
+        child: GestureDetector(
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('$fullName ($plateNumber) - $status')),
+            );
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: markerColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
+                ),
+                child: const Icon(Icons.directions_car, color: Colors.white, size: 20),
+              ),
+              Text(plateNumber, style: const TextStyle(fontSize: 10, backgroundColor: Colors.white))
+            ],
+          ),
+        ),
+      );
+    }).whereType<Marker>().toList();
+  }
+
+  // Build route polyline (Angeles to San Fernando - simplified)
+  List<LatLng> _buildRouteLine() {
+    return [
+      const LatLng(15.08, 120.64), // Starting point (Angeles area)
+      const LatLng(15.10, 120.63),
+      const LatLng(15.12, 120.62),
+      const LatLng(15.14, 120.61), // Ending point (San Fernando area)
+    ];
+  }
+
+  void _refreshData() {
+    setState(() {});
+    _addNotification('Data refreshed!');
+  }
+
+  void _logout() {
+    _auth.signOut();
+    if (mounted) {
+      Navigator.pushNamedAndRemoveUntil(context, '/login', (r) => false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final appState = AppStateProvider.of(context);
+    final isMobile = MediaQuery.of(context).size.width < 600;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Commuter Portal'),
+        title: const Text('Commuter Dashboard'),
+        elevation: 4,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: _refreshData,
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Logout',
-            onPressed: () {
-              appState.logout();
-              Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
-            },
+            onPressed: _logout,
           ),
         ],
       ),
-      body: Center(
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _firestore.collection('drivers').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error, color: Colors.red, size: 48),
+                  const SizedBox(height: 16),
+                  Text('Error: ${snapshot.error}'),
+                ],
+              ),
+            );
+          }
+
+          final drivers = snapshot.data?.docs ?? [];
+          
+          // Filter only drivers with valid GPS data
+          final activeDrivers = drivers
+              .where((doc) {
+                final data = doc.data();
+                final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
+                return gpsEnabled &&
+                    data['latitude'] != null &&
+                    data['longitude'] != null;
+              })
+              .toList();
+
+          // Calculate demand from notifications (simple approach)
+          final highDemandCount = drivers
+              .where((doc) => (doc.data()['demand'] as String?) == 'HIGH')
+              .length;
+          final currentDemand =
+              highDemandCount > (drivers.length ~/ 2) ? 'HIGH' : 'LOW';
+
+          // Notify on demand change
+          if (currentDemand != _prevDemand) {
+            _addNotification('Passenger demand: $currentDemand');
+            _prevDemand = currentDemand;
+          }
+
+          final routeStatus =
+              _determineRouteStatus(activeDrivers.length, currentDemand);
+          final waitingTime = _calculateWaitingTime(activeDrivers.length);
+
+          return isMobile
+              ? _buildMobileLayout(
+                  drivers, activeDrivers, routeStatus, waitingTime, currentDemand)
+              : _buildDesktopLayout(
+                  drivers, activeDrivers, routeStatus, waitingTime, currentDemand);
+        },
+      ),
+    );
+  }
+
+  // Mobile layout (single column with map prominent)
+  Widget _buildMobileLayout(
+    List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+    String routeStatus,
+    int waitingTime,
+    String demand,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 1. ROUTE HEADER CARD
+          _buildRouteCard(routeStatus),
+          const SizedBox(height: 12),
+
+          // 2. LIVE JEEPNEY STATUS CARD
+          _buildJeepneyStatusCard(activeDrivers.length, allDrivers.length - activeDrivers.length),
+          const SizedBox(height: 12),
+
+          // 4. ESTIMATED WAITING TIME CARD
+          _buildWaitingTimeCard(waitingTime),
+          const SizedBox(height: 12),
+
+          // 3. LIVE MAP SECTION (smaller on mobile)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: SizedBox(
+              height: 300,
+              child: _buildMapWidget(activeDrivers),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 5. JEEPNEY LIST (AVAILABLE DRIVERS)
+          _buildAvailableDriversList(activeDrivers),
+          const SizedBox(height: 12),
+
+          // 6. NOTIFICATIONS SECTION
+          _buildNotificationsCard(),
+        ],
+      ),
+    );
+  }
+
+  // Desktop layout (side-by-side)
+  Widget _buildDesktopLayout(
+    List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+    String routeStatus,
+    int waitingTime,
+    String demand,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Left column: Info cards
+              Expanded(
+                flex: 1,
+                child: Column(
+                  children: [
+                    _buildRouteCard(routeStatus),
+                    const SizedBox(height: 12),
+                    _buildJeepneyStatusCard(
+                        activeDrivers.length, allDrivers.length - activeDrivers.length),
+                    const SizedBox(height: 12),
+                    _buildWaitingTimeCard(waitingTime),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Right column: Map
+              Expanded(
+                flex: 1,
+                child: SizedBox(
+                  height: 400,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: _buildMapWidget(activeDrivers),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 1,
+                child: _buildAvailableDriversList(activeDrivers),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 1,
+                child: _buildNotificationsCard(),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 1. ROUTE HEADER CARD
+  Widget _buildRouteCard(String status) {
+    final statusColor = status == 'Available'
+        ? Colors.green
+        : (status == 'Limited' ? Colors.orange : Colors.red);
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: statusColor.withValues(alpha: 0.1),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Welcome, Commuter!',
-              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+              'Route Status',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Angeles → San Fernando',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    status,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 2. LIVE JEEPNEY STATUS CARD
+  Widget _buildJeepneyStatusCard(int active, int offline) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Live Jeepney Status',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Active Jeepneys', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text(
+                      '$active',
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Offline', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text(
+                      '$offline',
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Status: ${active > 0 ? "AVAILABLE" : "NO TRIPS"}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: active > 0 ? Colors.blue : Colors.red,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 4. ESTIMATED WAITING TIME CARD
+  Widget _buildWaitingTimeCard(int minutes) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: Colors.blue.withValues(alpha: 0.05),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Estimated Waiting Time',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 8),
             Text(
-              'Logged in as: ${appState.displayName}',
-              style: const TextStyle(fontSize: 16, color: Colors.grey),
+              '$minutes',
+              style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.blue),
             ),
-            const SizedBox(height: 32),
-            ElevatedButton.icon(
-              onPressed: () {
-                appState.logout();
-                Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
-              },
-              icon: const Icon(Icons.logout),
-              label: const Text('Logout'),
+            const Text(
+              'minutes',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 3. LIVE MAP SECTION
+  Widget _buildMapWidget(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+    return FlutterMap(
+      mapController: _mapController,
+      options: const MapOptions(
+        initialCenter: LatLng(15.12, 120.625), // Center of route
+        initialZoom: 13,
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.example.jeepjeep',
+        ),
+        PolylineLayer(
+          polylines: [
+            Polyline(
+              points: _buildRouteLine(),
+              color: Colors.blue,
+              strokeWidth: 4,
+            ),
+          ],
+        ),
+        MarkerLayer(
+          markers: _buildDriverMarkers(activeDrivers),
+        ),
+      ],
+    );
+  }
+
+  // 5. JEEPNEY LIST (AVAILABLE DRIVERS)
+  Widget _buildAvailableDriversList(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Available Jeepneys',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            if (activeDrivers.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('No jeepneys currently operating.', style: TextStyle(color: Colors.grey)),
+              )
+            else
+              ...activeDrivers.map((doc) {
+                final data = doc.data() ?? {};
+                final fullName = data['fullName'] as String? ?? 'Unknown Driver';
+                final plateNumber = data['plateNumber'] as String? ?? 'N/A';
+                final status = (data['status'] as String?)?.toLowerCase() ?? 'offline';
+                final demand = (data['demand'] as String?) ?? 'LOW';
+
+                return ListTile(
+                  dense: true,
+                  leading: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.blue,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.directions_car, color: Colors.white, size: 20),
+                  ),
+                  title: Text(fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Plate: $plateNumber'),
+                      Text(
+                        'Demand: $demand',
+                        style: TextStyle(
+                          color: demand == 'HIGH' ? Colors.red : Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  trailing: Chip(
+                    label: Text(status),
+                    backgroundColor: status == 'operating' ? Colors.green : Colors.grey,
+                    labelStyle: const TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 6. NOTIFICATIONS SECTION
+  Widget _buildNotificationsCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Notifications',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                if (_notifications.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.clear_all, size: 18),
+                    onPressed: () {
+                      setState(() => _notifications.clear());
+                    },
+                    tooltip: 'Clear all',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_notifications.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('No notifications yet.', style: TextStyle(color: Colors.grey)),
+              )
+            else
+              ...List.generate(
+                _notifications.length,
+                (index) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info, size: 16, color: Colors.blue),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _notifications[index],
+                          style: const TextStyle(fontSize: 12),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),

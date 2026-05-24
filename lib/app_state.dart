@@ -124,9 +124,36 @@ class AppState extends ChangeNotifier {
   }
 
   Future<String?> login(String email, String password) async {
+    // Test accounts for development
     if (email == 'admin' && password == 'admin123') {
       adminLoggedIn = true;
       userRole = 'admin';
+      notifyListeners();
+      return null;
+    }
+    
+    if (email == 'driver' && password == 'driver123') {
+      userRole = 'driver';
+      // Create a test driver in Firestore with fixed ID
+      await _firestore.collection('drivers').doc('test_driver').set({
+        'email': email,
+        'status': 'offline',
+        'latitude': 15.5,
+        'longitude': 120.5,
+        'demand': 'LOW',
+      });
+      notifyListeners();
+      return null;
+    }
+    
+    if (email == 'commuter' && password == 'commuter123') {
+      userRole = 'commuter';
+      // Create a test commuter in Firestore
+      final testCommueterId = 'test_commuter_${DateTime.now().millisecondsSinceEpoch}';
+      await _firestore.collection('commuters').doc(testCommueterId).set({
+        'email': email,
+        'status': 'active',
+      });
       notifyListeners();
       return null;
     }
@@ -193,6 +220,36 @@ class AppState extends ChangeNotifier {
 
         print('[AppState] register: writing user doc for $userId');
         await _firestore.collection('users').doc(userId).set(userData);
+
+        if (role == 'driver') {
+          print('[AppState] register: writing driver doc for $userId');
+          await _firestore.collection('drivers').doc(userId).set({
+            'fullName': name,
+            'email': email,
+            'contactNumber': contactNumber ?? '',
+            'licenseNumber': licenseNumber ?? '',
+            'plateNumber': plateNumber ?? '',
+            'route': route ?? '',
+            'availableSeats': 10,
+            'statusColor': 'green',
+            'statusLabel': 'Vacant',
+            'latitude': 15.13,
+            'longitude': 120.65,
+            'gpsEnabled': false,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+          print('[AppState] register: driver doc write complete for $userId');
+        } else if (role == 'commuter') {
+          print('[AppState] register: writing commuter doc for $userId');
+          await _firestore.collection('commuters').doc(userId).set({
+            'fullName': name,
+            'email': email,
+            'status': 'active',
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+          print('[AppState] register: commuter doc write complete for $userId');
+        }
+
         print('[AppState] register: firestore write complete for $userId');
         userRole = role;
       }

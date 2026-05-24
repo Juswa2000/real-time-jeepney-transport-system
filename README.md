@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # jeepjeep
 
 A new Flutter project.
@@ -14,3 +15,6 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+=======
+# real-time-jeepney-transport-system
+>>>>>>> 885a367bd7555a75ba767e9e285ba25c377a2ddf
