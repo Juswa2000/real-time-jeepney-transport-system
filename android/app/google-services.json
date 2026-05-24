@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "929130984219",
+    "project_id": "jeepneyauth",
+    "storage_bucket": "jeepneyauth.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:929130984219:android:a89edb2f649b0b97c7d9be",
+        "android_client_info": {
+          "package_name": "com.example.jeepjeep"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJPskGR6fa8hfFrGty_g3JuIIbjcYnZME"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
