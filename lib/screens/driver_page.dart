@@ -10,7 +10,7 @@ class DriverPage extends StatefulWidget {
   State<DriverPage> createState() => _DriverPageState();
 }
 
-class _DriverPageState extends State<DriverPage> {
+class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _seatController = TextEditingController();
@@ -22,6 +22,7 @@ class _DriverPageState extends State<DriverPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _driverId = _auth.currentUser?.uid;
     _ensureDriverDocExists();
     _addSampleNotifications();
@@ -29,8 +30,31 @@ class _DriverPageState extends State<DriverPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _seatController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused) {
+      // App is going to background/closed
+      _setDriverOffline();
+    }
+  }
+
+  Future<void> _setDriverOffline() async {
+    if (_driverId == null) return;
+    try {
+      await _firestore.collection('drivers').doc(_driverId).set({
+        'gpsEnabled': false,
+        'lastOfflineAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      // Notify silently without setState as the widget might be unmounted
+    } catch (e) {
+      // Silently ignore errors when app is closing
+    }
   }
 
   Future<void> _ensureDriverDocExists() async {

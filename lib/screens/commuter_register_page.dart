@@ -51,8 +51,38 @@ class _CommuterRegisterPageState extends State<CommuterRegisterPage> {
       return;
     }
 
-    print('[CommuterRegisterPage] navigating to /commuter');
-    Navigator.pushReplacementNamed(context, '/commuter');
+    print('[CommuterRegisterPage] registration successful; prompting next action');
+    await _showPostRegisterDialog(dashboardRoute: '/commuter');
+  }
+
+  Future<void> _showPostRegisterDialog({required String dashboardRoute}) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Account Created'),
+          content: const Text(
+              'Your account was created successfully. Where would you like to go next?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Back to Login'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Go to Dashboard'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (result == true) {
+      Navigator.pushReplacementNamed(context, dashboardRoute);
+    } else {
+      Navigator.pushReplacementNamed(context, '/login');
+    }
   }
 
   @override

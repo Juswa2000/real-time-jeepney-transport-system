@@ -136,7 +136,8 @@ class _CommuterPageState extends State<CommuterPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = MediaQuery.of(context).size.width < 600;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 850;
 
     return Scaffold(
       appBar: AppBar(
@@ -203,13 +204,16 @@ class _CommuterPageState extends State<CommuterPage> {
 
           final routeStatus =
               _determineRouteStatus(activeDrivers.length, currentDemand);
-          final waitingTime = _calculateWaitingTime(activeDrivers.length);
 
           return isMobile
               ? _buildMobileLayout(
-                  drivers, activeDrivers, routeStatus, waitingTime, currentDemand)
+                  screenWidth,
+                  drivers,
+                  activeDrivers,
+                  routeStatus,
+                  currentDemand)
               : _buildDesktopLayout(
-                  drivers, activeDrivers, routeStatus, waitingTime, currentDemand);
+                  drivers, activeDrivers, routeStatus, currentDemand);
         },
       ),
     );
@@ -217,14 +221,18 @@ class _CommuterPageState extends State<CommuterPage> {
 
   // Mobile layout (single column with map prominent)
   Widget _buildMobileLayout(
+    double screenWidth,
     List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
     List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
     String routeStatus,
-    int waitingTime,
     String demand,
   ) {
+    final mapHeight = (screenWidth * 0.65).clamp(260.0, 360.0);
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 360 ? 8 : 12,
+        vertical: 10,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -233,18 +241,18 @@ class _CommuterPageState extends State<CommuterPage> {
           const SizedBox(height: 12),
 
           // 2. LIVE JEEPNEY STATUS CARD
-          _buildJeepneyStatusCard(activeDrivers.length, allDrivers.length - activeDrivers.length),
+          _buildJeepneyStatusCard(activeDrivers.length),
           const SizedBox(height: 12),
 
-          // 4. ESTIMATED WAITING TIME CARD
-          _buildWaitingTimeCard(waitingTime),
+          // 4. DRIVER STATUS GUIDE CARD
+          _buildDriverStatusGuideCard(),
           const SizedBox(height: 12),
 
           // 3. LIVE MAP SECTION (smaller on mobile)
           ClipRRect(
             borderRadius: BorderRadius.circular(12),
             child: SizedBox(
-              height: 300,
+              height: mapHeight,
               child: _buildMapWidget(activeDrivers),
             ),
           ),
@@ -266,7 +274,6 @@ class _CommuterPageState extends State<CommuterPage> {
     List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
     List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
     String routeStatus,
-    int waitingTime,
     String demand,
   ) {
     return SingleChildScrollView(
@@ -284,10 +291,9 @@ class _CommuterPageState extends State<CommuterPage> {
                   children: [
                     _buildRouteCard(routeStatus),
                     const SizedBox(height: 12),
-                    _buildJeepneyStatusCard(
-                        activeDrivers.length, allDrivers.length - activeDrivers.length),
+                    _buildJeepneyStatusCard(activeDrivers.length),
                     const SizedBox(height: 12),
-                    _buildWaitingTimeCard(waitingTime),
+                    _buildDriverStatusGuideCard(),
                   ],
                 ),
               ),
@@ -376,7 +382,7 @@ class _CommuterPageState extends State<CommuterPage> {
   }
 
   // 2. LIVE JEEPNEY STATUS CARD
-  Widget _buildJeepneyStatusCard(int active, int offline) {
+  Widget _buildJeepneyStatusCard(int active) {
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -390,28 +396,13 @@ class _CommuterPageState extends State<CommuterPage> {
               style: TextStyle(fontSize: 14, color: Colors.grey),
             ),
             const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Active Jeepneys', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    Text(
-                      '$active',
-                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green),
-                    ),
-                  ],
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Offline', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    Text(
-                      '$offline',
-                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red),
-                    ),
-                  ],
+                const Text('Active Jeepneys', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                Text(
+                  '$active',
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green),
                 ),
               ],
             ),
@@ -438,32 +429,77 @@ class _CommuterPageState extends State<CommuterPage> {
   }
 
   // 4. ESTIMATED WAITING TIME CARD
-  Widget _buildWaitingTimeCard(int minutes) {
+  Widget _buildDriverStatusGuideCard() {
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.blue.withValues(alpha: 0.05),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Estimated Waiting Time',
+              'Driver Status Guide',
               style: TextStyle(fontSize: 14, color: Colors.grey),
             ),
-            const SizedBox(height: 8),
-            Text(
-              '$minutes',
-              style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.blue),
+            const SizedBox(height: 12),
+            _buildStatusGuideRow(
+              Colors.green,
+              '🟢 GREEN = VACANT',
+              'Many seats are available.',
             ),
-            const Text(
-              'minutes',
-              style: TextStyle(fontSize: 14, color: Colors.grey),
+            const SizedBox(height: 12),
+            _buildStatusGuideRow(
+              Colors.orange,
+              '🟠 ORANGE = LIMITED',
+              'Only 1–2 seats remaining.',
+            ),
+            const SizedBox(height: 12),
+            _buildStatusGuideRow(
+              Colors.red,
+              '🔴 RED = FULL',
+              'Jeepney is already full.',
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildStatusGuideRow(Color color, String title, String description) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          margin: const EdgeInsets.only(top: 4),
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                description,
+                style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
