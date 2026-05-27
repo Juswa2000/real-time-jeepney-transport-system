@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Drivers collection: drivers can write only to their own doc; authenticated users can read
+    match /drivers/{driverId} {
+      allow read: if request.auth != null;
+
+      // Allow drivers to create/update their own document
+      allow write: if request.auth != null && request.auth.uid == driverId;
+    }
+
+    // Default: deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -22,6 +23,14 @@ class _CommuterPageState extends State<CommuterPage> {
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
   final MapController _mapController = MapController();
+  // Track last-known driver positions for smooth animation
+  final Map<String, LatLng> _driverPositions = {};
+  // Store lightweight metadata for markers (name, plate, status)
+  final Map<String, Map<String, dynamic>> _driverMeta = {};
+  // Track active animation timers per driver
+  final Map<String, Timer> _animationTimers = {};
+  // Prevent overlapping animations
+  final Set<String> _animating = {};
   
   final List<String> _notifications = [];
   String _prevDemand = 'LOW';
@@ -58,18 +67,19 @@ class _CommuterPageState extends State<CommuterPage> {
   }
 
   // Build map markers for each active driver
-  List<Marker> _buildDriverMarkers(List<DocumentSnapshot> drivers) {
-    return drivers.map((doc) {
-      final data = doc.data() as Map<String, dynamic>?;
-      if (data == null) return null;
-      final lat = (data['latitude'] as num?)?.toDouble();
-      final lon = (data['longitude'] as num?)?.toDouble();
-      final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
-      final statusValue = (data['status'] as String?)?.toLowerCase();
-      final status = statusValue ?? (gpsEnabled ? 'operating' : 'offline');
-      final plateNumber = data['plateNumber'] as String? ?? 'Unknown';
-      final fullName = data['fullName'] as String? ?? 'Driver';
-      final statusColor = (data['statusColor'] as String?)?.toLowerCase() ?? 'blue';
+  // Build markers based on the last-known animated positions
+  List<Marker> _buildDriverMarkersFromState() {
+    return _driverPositions.entries.map((entry) {
+      final id = entry.key;
+      final pos = entry.value;
+      final meta = _driverMeta[id] ?? {};
+      final gpsEnabled = (meta['gpsEnabled'] as bool?) ?? true;
+      if (!gpsEnabled || pos.latitude == 0 && pos.longitude == 0) return null;
+
+      final plateNumber = meta['plateNumber'] as String? ?? 'Unknown';
+      final fullName = meta['fullName'] as String? ?? 'Driver';
+      final statusColor = (meta['statusColor'] as String?)?.toLowerCase() ?? 'blue';
+
       final markerColor = statusColor == 'green'
           ? Colors.green
           : statusColor == 'orange'
@@ -78,17 +88,14 @@ class _CommuterPageState extends State<CommuterPage> {
                   ? Colors.red
                   : Colors.blue;
 
-      // Only show drivers with valid GPS data
-      if (!gpsEnabled || lat == null || lon == null) return null;
-
       return Marker(
-        point: LatLng(lat, lon),
+        point: pos,
         width: 80,
         height: 80,
         child: GestureDetector(
           onTap: () {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('$fullName ($plateNumber) - $status')),
+              SnackBar(content: Text('$fullName ($plateNumber)')),
             );
           },
           child: Column(
@@ -110,6 +117,34 @@ class _CommuterPageState extends State<CommuterPage> {
         ),
       );
     }).whereType<Marker>().toList();
+  }
+
+  LatLng _lerpLatLng(LatLng a, LatLng b, double t) {
+    return LatLng(a.latitude + (b.latitude - a.latitude) * t, a.longitude + (b.longitude - a.longitude) * t);
+  }
+
+  void _startMarkerAnimation(String id, LatLng from, LatLng to, {int durationMs = 600}) {
+    if (_animating.contains(id)) return;
+    _animating.add(id);
+
+    _animationTimers[id]?.cancel();
+    final int steps = 12;
+    int step = 0;
+    final interval = Duration(milliseconds: (durationMs / steps).round());
+
+    _animationTimers[id] = Timer.periodic(interval, (timer) {
+      step++;
+      final t = (step / steps).clamp(0.0, 1.0);
+      final next = _lerpLatLng(from, to, t);
+      _driverPositions[id] = next;
+      if (mounted) setState(() {});
+
+      if (t >= 1.0) {
+        timer.cancel();
+        _animationTimers.remove(id);
+        _animating.remove(id);
+      }
+    });
   }
 
   // Build route polyline (Angeles to San Fernando - simplified)
@@ -204,6 +239,49 @@ class _CommuterPageState extends State<CommuterPage> {
 
           final routeStatus =
               _determineRouteStatus(activeDrivers.length, currentDemand);
+
+          // Update driver position state and start animations for changed positions
+          final activeIds = <String>{};
+          for (final doc in activeDrivers) {
+            final id = doc.id;
+            activeIds.add(id);
+            final data = doc.data() as Map<String, dynamic>? ?? {};
+            final lat = (data['latitude'] as num?)?.toDouble();
+            final lon = (data['longitude'] as num?)?.toDouble();
+            final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
+
+            // update meta for marker rendering
+            _driverMeta[id] = {
+              'plateNumber': data['plateNumber'] as String? ?? 'Unknown',
+              'fullName': data['fullName'] as String? ?? 'Driver',
+              'statusColor': data['statusColor'] as String? ?? 'blue',
+              'gpsEnabled': gpsEnabled,
+            };
+
+            if (!gpsEnabled || lat == null || lon == null) continue;
+
+            final newPos = LatLng(lat, lon);
+            final prevPos = _driverPositions[id];
+            if (prevPos == null) {
+              _driverPositions[id] = newPos;
+            } else {
+              final latDiff = (prevPos.latitude - newPos.latitude).abs();
+              final lonDiff = (prevPos.longitude - newPos.longitude).abs();
+              if (latDiff > 0.00001 || lonDiff > 0.00001) {
+                _startMarkerAnimation(id, prevPos, newPos);
+              }
+            }
+          }
+
+          // Remove positions for drivers that went offline or left
+          final toRemove = _driverPositions.keys.where((k) => !activeIds.contains(k)).toList();
+          for (final k in toRemove) {
+            _driverPositions.remove(k);
+            _driverMeta.remove(k);
+            _animationTimers[k]?.cancel();
+            _animationTimers.remove(k);
+            _animating.remove(k);
+          }
 
           return isMobile
               ? _buildMobileLayout(
@@ -526,7 +604,7 @@ class _CommuterPageState extends State<CommuterPage> {
           ],
         ),
         MarkerLayer(
-          markers: _buildDriverMarkers(activeDrivers),
+          markers: _buildDriverMarkersFromState(),
         ),
       ],
     );
@@ -657,5 +735,15 @@ class _CommuterPageState extends State<CommuterPage> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    for (final t in _animationTimers.values) {
+      t.cancel();
+    }
+    _animationTimers.clear();
+    _animating.clear();
+    super.dispose();
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -14,6 +15,10 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _seatController = TextEditingController();
+
+  // Continuous location publishing
+  StreamSubscription<Position>? _positionSubscription;
+  bool _publishing = false;
 
   String? _driverId;
   bool _isProcessing = false;
@@ -41,6 +46,10 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused) {
       // App is going to background/closed
       _setDriverOffline();
+    }
+    if (state == AppLifecycleState.detached || state == AppLifecycleState.inactive) {
+      // ensure we stop publishing when app is terminated
+      _stopPublishing();
     }
   }
 
@@ -215,6 +224,64 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  Future<void> _startPublishing() async {
+    if (_driverId == null) return;
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _addNotification('Location services disabled.');
+      return;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      _addNotification('Location permission denied.');
+      return;
+    }
+
+    // Listen to position updates and write to Firestore
+    _positionSubscription?.cancel();
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 5, // meters
+      ),
+    ).listen((position) async {
+      try {
+        await _firestore.collection('drivers').doc(_driverId).set({
+          'latitude': position.latitude,
+          'longitude': position.longitude,
+          'gpsEnabled': true,
+          'heading': position.heading,
+          'speed': position.speed,
+          'lastGpsAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (e) {
+        _addNotification('Failed to publish location: $e');
+      }
+    }, onError: (e) {
+      _addNotification('Location stream error: $e');
+    });
+
+    setState(() => _publishing = true);
+    _addNotification('Started publishing location updates.');
+  }
+
+  Future<void> _stopPublishing() async {
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
+    if (_driverId != null) {
+      await _firestore.collection('drivers').doc(_driverId).set({
+        'gpsEnabled': false,
+        'lastOfflineAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
+    setState(() => _publishing = false);
+    _addNotification('Stopped publishing location updates.');
   }
 
   Future<void> _logout() async {
@@ -392,6 +459,15 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
               icon: const Icon(Icons.my_location),
               label: const Text('Enable GPS / Refresh Location'),
             ),
+            const SizedBox(height: 8),
+            ElevatedButton.icon(
+              onPressed: _publishing ? _stopPublishing : _startPublishing,
+              icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
+              label: Text(_publishing ? 'Stop Live Publish' : 'Start Live Publish'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _publishing ? Colors.red : Colors.green,
+              ),
+            ),
           ],
         ),
       ),
@@ -528,7 +604,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Colors.amber.withOpacity(0.1),
+                color: Colors.amber.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Text(
