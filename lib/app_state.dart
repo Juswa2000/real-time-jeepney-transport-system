@@ -195,12 +195,12 @@ class AppState extends ChangeNotifier {
     String? route,
   }) async {
     try {
-      print('[AppState] register: start for $email, role=$role');
+      debugPrint('[AppState] register: start for $email, role=$role');
       final result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
-      print('[AppState] register: auth created user: ${result.user?.uid}');
+      debugPrint('[AppState] register: auth created user: ${result.user?.uid}');
       final userId = result.user?.uid;
       if (userId != null) {
         final userData = <String, dynamic>{
@@ -218,11 +218,11 @@ class AppState extends ChangeNotifier {
           userData['route'] = route ?? '';
         }
 
-        print('[AppState] register: writing user doc for $userId');
+        debugPrint('[AppState] register: writing user doc for $userId');
         await _firestore.collection('users').doc(userId).set(userData);
 
         if (role == 'driver') {
-          print('[AppState] register: writing driver doc for $userId');
+          debugPrint('[AppState] register: writing driver doc for $userId');
           await _firestore.collection('drivers').doc(userId).set({
             'fullName': name,
             'email': email,
@@ -238,25 +238,25 @@ class AppState extends ChangeNotifier {
             'gpsEnabled': false,
             'createdAt': FieldValue.serverTimestamp(),
           });
-          print('[AppState] register: driver doc write complete for $userId');
+          debugPrint('[AppState] register: driver doc write complete for $userId');
         } else if (role == 'commuter') {
-          print('[AppState] register: writing commuter doc for $userId');
+          debugPrint('[AppState] register: writing commuter doc for $userId');
           await _firestore.collection('commuters').doc(userId).set({
             'fullName': name,
             'email': email,
             'status': 'active',
             'createdAt': FieldValue.serverTimestamp(),
           });
-          print('[AppState] register: commuter doc write complete for $userId');
+          debugPrint('[AppState] register: commuter doc write complete for $userId');
         }
 
-        print('[AppState] register: firestore write complete for $userId');
+        debugPrint('[AppState] register: firestore write complete for $userId');
         userRole = role;
       }
-      print('[AppState] register: finished');
+      debugPrint('[AppState] register: finished');
       return null;
     } on FirebaseAuthException catch (exception) {
-      print(
+      debugPrint(
         '[AppState] register: FirebaseAuthException (${exception.code}): ${exception.message}',
       );
       String friendly;
@@ -280,8 +280,8 @@ class AppState extends ChangeNotifier {
       }
       return friendly;
     } catch (e, st) {
-      print('[AppState] register: unexpected error: $e');
-      print(st);
+      debugPrint('[AppState] register: unexpected error: $e');
+      debugPrint('$st');
       return 'Unexpected error during registration.';
     }
   }

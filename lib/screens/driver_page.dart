@@ -23,6 +23,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   String? _driverId;
   bool _isProcessing = false;
   final List<String> _notifications = [];
+  int _selectedTabIndex = 0;
 
   @override
   void initState() {
@@ -113,16 +114,6 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     });
   }
 
-  Map<String, String> _getStatusFromSeats(int seats) {
-    if (seats >= 3) {
-      return {'color': 'green', 'label': 'Vacant'};
-    }
-    if (seats >= 1) {
-      return {'color': 'orange', 'label': 'Limited'};
-    }
-    return {'color': 'red', 'label': 'Full'};
-  }
-
   Color _getColorFromString(String colorString) {
     switch (colorString.toLowerCase()) {
       case 'green':
@@ -136,51 +127,6 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _updateSeats(int newSeats) async {
-    if (_driverId == null) return;
-    if (newSeats < 0 || newSeats > 15) {
-      _addNotification('Invalid seat count. Must be 0–15.');
-      return;
-    }
-
-    final status = _getStatusFromSeats(newSeats);
-    try {
-      setState(() => _isProcessing = true);
-      await _firestore.collection('drivers').doc(_driverId).set({
-        'availableSeats': newSeats,
-        'statusColor': status['color'],
-        'statusLabel': status['label'],
-        'lastUpdated': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      if (newSeats == 0) {
-        _addNotification('🔴 Jeepney is FULL. No more seats available.');
-      } else if (newSeats <= 2) {
-        _addNotification('🟠 Only $newSeats seat(s) left — almost full.');
-      } else {
-        _addNotification('🟢 $newSeats seats are available. Jeepney is ready.');
-      }
-    } catch (e) {
-      _addNotification('Failed to update seats: $e');
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-    }
-  }
-
-  Future<void> _changeSeatCount(int delta, int currentSeats) async {
-    await _updateSeats((currentSeats + delta).clamp(0, 15));
-  }
-
-  Future<void> _submitSeatInput() async {
-    final raw = _seatController.text.trim();
-    final value = int.tryParse(raw);
-    if (value == null) {
-      _addNotification('Please enter a valid integer for seats.');
-      return;
-    }
-    await _updateSeats(value);
-    _seatController.clear();
-  }
 
   Future<void> _refreshLocation() async {
     if (_driverId == null) return;
@@ -618,6 +564,243 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildDashboardTab(
+    String fullName,
+    String plateNumber,
+    String route,
+    String statusColor,
+    String statusLabel,
+    double latitude,
+    double longitude,
+    bool gpsEnabled,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildDriverInfoCard(
+            fullName,
+            plateNumber,
+            route,
+            statusColor,
+            statusLabel,
+          ),
+          const SizedBox(height: 16),
+          _buildStatusQuickSelectCard(),
+          const SizedBox(height: 16),
+          _buildGpsCard(latitude, longitude, gpsEnabled),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLiveMapTab() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.map,
+              size: 80,
+              color: Colors.blue[300],
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Live Map',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Real-time location tracking map will be displayed here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 16, color: Colors.black54),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _publishing ? _stopPublishing : _startPublishing,
+              icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
+              label: Text(_publishing ? 'Stop Broadcast' : 'Start Broadcast'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _publishing ? Colors.red : Colors.green,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotificationTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: _buildNotificationsCard(),
+    );
+  }
+
+  Widget _buildProfileTab(
+    String fullName,
+    String plateNumber,
+    String route,
+    String statusColor,
+    String statusLabel,
+    int availableSeats,
+  ) {
+    final color = _getColorFromString(statusColor);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            elevation: 6,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue[300],
+                    ),
+                    child: const Icon(
+                      Icons.person,
+                      size: 48,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    fullName,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Driver',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Jeepney Information',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Plate Number:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Text(
+                        plateNumber,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Route:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Expanded(
+                        child: Text(
+                          route,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Available Seats:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Text(
+                        '$availableSeats',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Status:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: color,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          statusLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _logout,
+            icon: const Icon(Icons.logout),
+            label: const Text('Logout'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_driverId == null) {
@@ -697,24 +880,53 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
           final gpsEnabled = data['gpsEnabled'] as bool? ?? false;
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+          return Scaffold(
+            body: IndexedStack(
+              index: _selectedTabIndex,
               children: [
-                _buildDriverInfoCard(
+                _buildDashboardTab(
                   fullName,
                   plateNumber,
                   route,
                   statusColor,
                   statusLabel,
+                  latitude,
+                  longitude,
+                  gpsEnabled,
                 ),
-                const SizedBox(height: 16),
-                _buildStatusQuickSelectCard(),
-                const SizedBox(height: 16),
-                _buildGpsCard(latitude, longitude, gpsEnabled),
-                const SizedBox(height: 16),
-                _buildNotificationsCard(),
+                _buildLiveMapTab(),
+                _buildNotificationTab(),
+                _buildProfileTab(
+                  fullName,
+                  plateNumber,
+                  route,
+                  statusColor,
+                  statusLabel,
+                  availableSeats,
+                ),
+              ],
+            ),
+            bottomNavigationBar: BottomNavigationBar(
+              currentIndex: _selectedTabIndex,
+              onTap: (index) => setState(() => _selectedTabIndex = index),
+              type: BottomNavigationBarType.fixed,
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.dashboard),
+                  label: 'Dashboard',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.map),
+                  label: 'Live Map',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.notifications),
+                  label: 'Notification',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.person),
+                  label: 'Profile',
+                ),
               ],
             ),
           );

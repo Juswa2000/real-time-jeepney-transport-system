@@ -37,10 +37,10 @@ class _CommuterRegisterPageState extends State<CommuterRegisterPage> {
       return;
     }
 
-    print('[CommuterRegisterPage] submit pressed for $email');
+    debugPrint('[CommuterRegisterPage] submit pressed for $email');
     setState(() => _isLoading = true);
     final error = await appState.register(email, password, 'commuter', name);
-    print('[CommuterRegisterPage] register returned error=$error');
+    debugPrint('[CommuterRegisterPage] register returned error=$error');
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -51,7 +51,7 @@ class _CommuterRegisterPageState extends State<CommuterRegisterPage> {
       return;
     }
 
-    print('[CommuterRegisterPage] registration successful; prompting next action');
+    debugPrint('[CommuterRegisterPage] registration successful; prompting next action');
     await _showPostRegisterDialog(dashboardRoute: '/commuter');
   }
 

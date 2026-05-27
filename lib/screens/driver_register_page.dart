@@ -54,7 +54,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
       return;
     }
 
-    print('[DriverRegisterPage] submit pressed for $email');
+    debugPrint('[DriverRegisterPage] submit pressed for $email');
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Registering driver...')));
@@ -75,18 +75,18 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
           .timeout(
             const Duration(seconds: 15),
             onTimeout: () {
-              print(
+              debugPrint(
                 '[DriverRegisterPage] register timed out after 15s for $email',
               );
               return 'Registration timed out. Check network or Firebase config.';
             },
           );
     } catch (e, st) {
-      print('[DriverRegisterPage] register threw: $e');
-      print(st);
+      debugPrint('[DriverRegisterPage] register threw: $e');
+      debugPrint('$st');
       error = 'Unexpected error: $e';
     }
-    print('[DriverRegisterPage] register returned error=$error');
+    debugPrint('[DriverRegisterPage] register returned error=$error');
     if (!mounted) return;
     setState(() => _isLoading = false);
 
@@ -97,7 +97,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
       return;
     }
 
-    print('[DriverRegisterPage] registration successful; prompting next action');
+    debugPrint('[DriverRegisterPage] registration successful; prompting next action');
     await _showPostRegisterDialog(dashboardRoute: '/driver');
   }
 

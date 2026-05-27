@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 // Real-Time Commuter Dashboard for "Real-Time Jeepney Transport Support Platform"
@@ -34,11 +37,182 @@ class _CommuterPageState extends State<CommuterPage> {
   
   final List<String> _notifications = [];
   String _prevDemand = 'LOW';
+  int _selectedTabIndex = 0;
+  String? _registeredName;
+
+  static const _openRouteServiceApiKey = 'YOUR_OPENROUTESERVICE_API_KEY';
+  static const _routeStart = LatLng(15.1455, 120.5979);
+  static const _routeEnd = LatLng(15.0578, 120.6715);
+  static const List<LatLng> _angelesToSanFernandoDetailedRoute = [
+    LatLng(15.145500, 120.597900),
+    LatLng(15.145350, 120.598050),
+    LatLng(15.145200, 120.598220),
+    LatLng(15.145050, 120.598390),
+    LatLng(15.144900, 120.598560),
+    LatLng(15.144750, 120.598730),
+    LatLng(15.144600, 120.598900),
+    LatLng(15.144450, 120.599070),
+    LatLng(15.144300, 120.599240),
+    LatLng(15.144150, 120.599410),
+    LatLng(15.144000, 120.599580),
+    LatLng(15.143850, 120.599750),
+    LatLng(15.143700, 120.599920),
+    LatLng(15.143550, 120.600090),
+    LatLng(15.143400, 120.600260),
+    LatLng(15.143250, 120.600430),
+    LatLng(15.143100, 120.600600),
+    LatLng(15.142950, 120.600770),
+    LatLng(15.142800, 120.600940),
+    LatLng(15.142650, 120.601110),
+    LatLng(15.142500, 120.601280),
+    LatLng(15.142350, 120.601450),
+    LatLng(15.142200, 120.601620),
+    LatLng(15.142050, 120.601790),
+    LatLng(15.141900, 120.601960),
+    LatLng(15.141750, 120.602130),
+    LatLng(15.141600, 120.602300),
+    LatLng(15.141450, 120.602470),
+    LatLng(15.141300, 120.602640),
+    LatLng(15.141150, 120.602810),
+    LatLng(15.141000, 120.602980),
+    LatLng(15.140850, 120.603150),
+    LatLng(15.140700, 120.603320),
+    LatLng(15.140550, 120.603490),
+    LatLng(15.140400, 120.603660),
+    LatLng(15.140250, 120.603830),
+    LatLng(15.140100, 120.604000),
+    LatLng(15.139950, 120.604170),
+    LatLng(15.139800, 120.604340),
+    LatLng(15.139650, 120.604510),
+    LatLng(15.139500, 120.604680),
+    LatLng(15.139350, 120.604850),
+    LatLng(15.139200, 120.605020),
+    LatLng(15.139050, 120.605190),
+    LatLng(15.138900, 120.605360),
+    LatLng(15.138750, 120.605530),
+    LatLng(15.138600, 120.605700),
+    LatLng(15.138450, 120.605870),
+    LatLng(15.138300, 120.606040),
+    LatLng(15.138150, 120.606210),
+    LatLng(15.138000, 120.606380),
+    LatLng(15.137850, 120.606550),
+    LatLng(15.137700, 120.606720),
+    LatLng(15.137550, 120.606890),
+    LatLng(15.137400, 120.607060),
+    LatLng(15.137250, 120.607230),
+    LatLng(15.137100, 120.607400),
+    LatLng(15.136950, 120.607570),
+    LatLng(15.136800, 120.607740),
+    LatLng(15.136650, 120.607910),
+    LatLng(15.136500, 120.608080),
+    LatLng(15.136350, 120.608250),
+    LatLng(15.136200, 120.608420),
+    LatLng(15.136050, 120.608590),
+    LatLng(15.135900, 120.608760),
+    LatLng(15.135750, 120.608930),
+    LatLng(15.135600, 120.609100),
+    LatLng(15.135450, 120.609270),
+    LatLng(15.135300, 120.609440),
+    LatLng(15.135150, 120.609610),
+    LatLng(15.135000, 120.609780),
+    LatLng(15.134850, 120.609950),
+    LatLng(15.134700, 120.610120),
+    LatLng(15.134550, 120.610290),
+    LatLng(15.134400, 120.610460),
+    LatLng(15.134250, 120.610630),
+    LatLng(15.134100, 120.610800),
+    LatLng(15.133950, 120.610970),
+    LatLng(15.133800, 120.611140),
+    LatLng(15.133650, 120.611310),
+    LatLng(15.133500, 120.611480),
+    LatLng(15.133350, 120.611650),
+    LatLng(15.133200, 120.611820),
+    LatLng(15.133050, 120.611990),
+    LatLng(15.132900, 120.612160),
+    LatLng(15.132750, 120.612330),
+    LatLng(15.132600, 120.612500),
+    LatLng(15.132450, 120.612670),
+    LatLng(15.132300, 120.612840),
+    LatLng(15.132150, 120.613010),
+    LatLng(15.132000, 120.613180),
+    LatLng(15.131850, 120.613350),
+    LatLng(15.131700, 120.613520),
+    LatLng(15.131550, 120.613690),
+    LatLng(15.131400, 120.613860),
+    LatLng(15.131250, 120.614030),
+    LatLng(15.131100, 120.614200),
+    LatLng(15.130950, 120.614370),
+    LatLng(15.130800, 120.614540),
+    LatLng(15.130650, 120.614710),
+    LatLng(15.130500, 120.614880),
+    LatLng(15.130350, 120.615050),
+    LatLng(15.130200, 120.615220),
+    LatLng(15.130050, 120.615390),
+    LatLng(15.129900, 120.615560),
+    LatLng(15.129750, 120.615730),
+    LatLng(15.129600, 120.615900),
+    LatLng(15.129450, 120.616070),
+    LatLng(15.129300, 120.616240),
+    LatLng(15.129150, 120.616410),
+    LatLng(15.129000, 120.616580),
+    LatLng(15.128850, 120.616750),
+    LatLng(15.128700, 120.616920),
+    LatLng(15.128550, 120.617090),
+    LatLng(15.128400, 120.617260),
+    LatLng(15.128250, 120.617430),
+    LatLng(15.128100, 120.617600),
+    LatLng(15.127950, 120.617770),
+    LatLng(15.127800, 120.617940),
+    LatLng(15.127650, 120.618110),
+    LatLng(15.127500, 120.618280),
+    LatLng(15.127350, 120.618450),
+    LatLng(15.127200, 120.618620),
+    LatLng(15.127050, 120.618790),
+    LatLng(15.126900, 120.618960),
+    LatLng(15.126750, 120.619130),
+    LatLng(15.126600, 120.619300),
+    LatLng(15.126450, 120.619470),
+    LatLng(15.126300, 120.619640),
+    LatLng(15.057800, 120.671500),
+  ];
+  final List<LatLng> _routePoints = [];
+  bool _routeLoading = true;
+  bool _usingFallbackRoute = false;
+  String? _routeError;
 
   @override
   void initState() {
     super.initState();
     _addNotification('Welcome to Commuter Portal! Tracking jeepneys for you.');
+    _loadRegisteredName();
+    _fetchRouteGeometry();
+  }
+
+  Future<void> _loadRegisteredName() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    String name = 'Commuter';
+    try {
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      final userData = userDoc.data();
+      if (userData != null) {
+        name = (userData['name'] as String?)?.trim() ?? name;
+      }
+      if (name == 'Commuter' || name.isEmpty) {
+        final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+        final commuterData = commuterDoc.data();
+        name = (commuterData?['fullName'] as String?)?.trim() ?? name;
+      }
+    } catch (_) {
+      // ignore errors and keep fallback name
+    }
+
+    if (mounted) {
+      setState(() {
+        _registeredName = name;
+      });
+    }
   }
 
   void _addNotification(String msg) {
@@ -48,15 +222,6 @@ class _CommuterPageState extends State<CommuterPage> {
         if (_notifications.length > 10) _notifications.removeLast();
       });
     }
-  }
-
-  // Calculate estimated waiting time based on number of active drivers
-  int _calculateWaitingTime(int activeDrivers) {
-    if (activeDrivers == 0) return 20;
-    if (activeDrivers <= 2) return 12;
-    if (activeDrivers <= 4) return 8;
-    if (activeDrivers <= 6) return 5;
-    return 3;
   }
 
   // Determine route status based on active drivers and passenger demand
@@ -147,17 +312,112 @@ class _CommuterPageState extends State<CommuterPage> {
     });
   }
 
-  // Build route polyline (Angeles to San Fernando - simplified)
-  List<LatLng> _buildRouteLine() {
-    return [
-      const LatLng(15.08, 120.64), // Starting point (Angeles area)
-      const LatLng(15.10, 120.63),
-      const LatLng(15.12, 120.62),
-      const LatLng(15.14, 120.61), // Ending point (San Fernando area)
-    ];
+  List<LatLng> _buildFallbackRoutePoints() {
+    return List<LatLng>.from(_angelesToSanFernandoDetailedRoute);
+  }
+
+  void _loadFallbackRoute() {
+    if (!mounted) return;
+
+    setState(() {
+      _routePoints
+        ..clear()
+        ..addAll(_buildFallbackRoutePoints());
+      _routeLoading = false;
+      _routeError = null;
+      _usingFallbackRoute = true;
+    });
+  }
+
+  Future<void> _fetchRouteGeometry() async {
+    if (_openRouteServiceApiKey.contains('YOUR_')) {
+      _loadFallbackRoute();
+      return;
+    }
+
+    _usingFallbackRoute = false;
+
+    try {
+      final url = Uri.parse('https://api.openrouteservice.org/v2/directions/driving-car/geojson');
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': _openRouteServiceApiKey,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: jsonEncode({
+          'coordinates': [
+            [_routeStart.longitude, _routeStart.latitude],
+            [_routeEnd.longitude, _routeEnd.latitude],
+          ],
+          'instructions': false,
+          'elevation': false,
+          'geometry_simplify': false,
+        }),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception('OpenRouteService request failed with status ${response.statusCode}');
+      }
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final features = body['features'] as List<dynamic>?;
+      if (features == null || features.isEmpty) {
+        throw Exception('No route returned by OpenRouteService.');
+      }
+
+      final geometry = (features.first as Map<String, dynamic>)['geometry'];
+      final routePoints = <LatLng>[];
+
+      if (geometry is Map<String, dynamic>) {
+        final coords = geometry['coordinates'];
+        if (coords is List) {
+          for (final entry in coords) {
+            if (entry is List && entry.length >= 2) {
+              final lon = (entry[0] as num).toDouble();
+              final lat = (entry[1] as num).toDouble();
+              routePoints.add(LatLng(lat, lon));
+            }
+          }
+        } else if (coords is String && coords.isNotEmpty) {
+          routePoints.addAll(_decodePolyline(coords));
+        }
+      } else if (geometry is String && geometry.isNotEmpty) {
+        routePoints.addAll(_decodePolyline(geometry));
+      }
+
+      if (routePoints.isEmpty) {
+        throw Exception('Unable to decode route geometry from OpenRouteService response.');
+      }
+
+      if (mounted) {
+        setState(() {
+          _routePoints
+            ..clear()
+            ..addAll(routePoints);
+          _routeLoading = false;
+          _routeError = null;
+          _usingFallbackRoute = false;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _routeError = error.toString();
+          _routeLoading = false;
+          _usingFallbackRoute = false;
+        });
+      }
+    }
+  }
+
+  List<LatLng> _decodePolyline(String encoded) {
+    final decoded = PolylinePoints.decodePolyline(encoded);
+    return decoded.map((point) => LatLng(point.latitude, point.longitude)).toList();
   }
 
   void _refreshData() {
+    _fetchRouteGeometry();
     setState(() {});
     _addNotification('Data refreshed!');
   }
@@ -169,11 +429,184 @@ class _CommuterPageState extends State<CommuterPage> {
     }
   }
 
+  Widget _buildMapTab(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+    return SizedBox(
+      height: double.infinity,
+      child: _buildMapWidget(activeDrivers),
+    );
+  }
+
+  Widget _buildJeepneysTab(
+    List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+    String routeStatus,
+    String demand,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildRouteCard(routeStatus),
+          const SizedBox(height: 16),
+          _buildJeepneyStatusCard(activeDrivers.length),
+          const SizedBox(height: 16),
+          _buildDriverStatusGuideCard(),
+          const SizedBox(height: 16),
+          _buildAvailableDriversList(activeDrivers),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: _buildNotificationsCard(),
+    );
+  }
+
+  Widget _buildProfileTab() {
+    final user = _auth.currentUser;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            elevation: 6,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue[300],
+                    ),
+                    child: const Icon(
+                      Icons.person,
+                      size: 48,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _registeredName ?? user?.displayName ?? 'Commuter',
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    user?.email ?? 'No email',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.black54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Account Information',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'User Type:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Text(
+                        'Commuter',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Email:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Expanded(
+                        child: Text(
+                          user?.email ?? 'N/A',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Account Status:',
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'Active',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _logout,
+            icon: const Icon(Icons.logout),
+            label: const Text('Logout'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isMobile = screenWidth < 850;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Commuter Dashboard'),
@@ -183,11 +616,6 @@ class _CommuterPageState extends State<CommuterPage> {
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
             onPressed: _refreshData,
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Logout',
-            onPressed: _logout,
           ),
         ],
       ),
@@ -283,128 +711,41 @@ class _CommuterPageState extends State<CommuterPage> {
             _animating.remove(k);
           }
 
-          return isMobile
-              ? _buildMobileLayout(
-                  screenWidth,
-                  drivers,
-                  activeDrivers,
-                  routeStatus,
-                  currentDemand)
-              : _buildDesktopLayout(
-                  drivers, activeDrivers, routeStatus, currentDemand);
-        },
-      ),
-    );
-  }
-
-  // Mobile layout (single column with map prominent)
-  Widget _buildMobileLayout(
-    double screenWidth,
-    List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
-    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
-    String routeStatus,
-    String demand,
-  ) {
-    final mapHeight = (screenWidth * 0.65).clamp(260.0, 360.0);
-    return SingleChildScrollView(
-      padding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 360 ? 8 : 12,
-        vertical: 10,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 1. ROUTE HEADER CARD
-          _buildRouteCard(routeStatus),
-          const SizedBox(height: 12),
-
-          // 2. LIVE JEEPNEY STATUS CARD
-          _buildJeepneyStatusCard(activeDrivers.length),
-          const SizedBox(height: 12),
-
-          // 4. DRIVER STATUS GUIDE CARD
-          _buildDriverStatusGuideCard(),
-          const SizedBox(height: 12),
-
-          // 3. LIVE MAP SECTION (smaller on mobile)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: SizedBox(
-              height: mapHeight,
-              child: _buildMapWidget(activeDrivers),
+          return Scaffold(
+            body: IndexedStack(
+              index: _selectedTabIndex,
+              children: [
+                _buildJeepneysTab(drivers, activeDrivers, routeStatus, currentDemand),
+                _buildMapTab(activeDrivers),
+                _buildNotificationsTab(),
+                _buildProfileTab(),
+              ],
             ),
-          ),
-          const SizedBox(height: 12),
-
-          // 5. JEEPNEY LIST (AVAILABLE DRIVERS)
-          _buildAvailableDriversList(activeDrivers),
-          const SizedBox(height: 12),
-
-          // 6. NOTIFICATIONS SECTION
-          _buildNotificationsCard(),
-        ],
-      ),
-    );
-  }
-
-  // Desktop layout (side-by-side)
-  Widget _buildDesktopLayout(
-    List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
-    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
-    String routeStatus,
-    String demand,
-  ) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Left column: Info cards
-              Expanded(
-                flex: 1,
-                child: Column(
-                  children: [
-                    _buildRouteCard(routeStatus),
-                    const SizedBox(height: 12),
-                    _buildJeepneyStatusCard(activeDrivers.length),
-                    const SizedBox(height: 12),
-                    _buildDriverStatusGuideCard(),
-                  ],
+            bottomNavigationBar: BottomNavigationBar(
+              currentIndex: _selectedTabIndex,
+              onTap: (index) => setState(() => _selectedTabIndex = index),
+              type: BottomNavigationBarType.fixed,
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.list),
+                  label: 'Jeepneys',
                 ),
-              ),
-              const SizedBox(width: 12),
-              // Right column: Map
-              Expanded(
-                flex: 1,
-                child: SizedBox(
-                  height: 400,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: _buildMapWidget(activeDrivers),
-                  ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.map),
+                  label: 'Live Map',
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 1,
-                child: _buildAvailableDriversList(activeDrivers),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 1,
-                child: _buildNotificationsCard(),
-              ),
-            ],
-          ),
-        ],
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.notifications),
+                  label: 'Notification',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.person),
+                  label: 'Profile',
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -432,9 +773,11 @@ class _CommuterPageState extends State<CommuterPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Angeles → San Fernando',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                const Expanded(
+                  child: Text(
+                    'Angeles → San Fernando',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
                 ),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -453,6 +796,27 @@ class _CommuterPageState extends State<CommuterPage> {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            if (_routeLoading)
+              const Text(
+                'Loading exact road route from OpenRouteService...',
+                style: TextStyle(color: Colors.black54),
+              )
+            else if (_routeError != null)
+              Text(
+                'Route error: $_routeError',
+                style: const TextStyle(color: Colors.redAccent),
+              )
+            else if (_usingFallbackRoute)
+              const Text(
+                'Using fallback route preview until an OpenRouteService API key is configured.',
+                style: TextStyle(color: Colors.black54),
+              )
+            else
+              const Text(
+                'Road-snapped route loaded along MacArthur Highway.',
+                style: TextStyle(color: Colors.black54),
+              ),
           ],
         ),
       ),
@@ -583,25 +947,20 @@ class _CommuterPageState extends State<CommuterPage> {
 
   // 3. LIVE MAP SECTION
   Widget _buildMapWidget(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+    final initialCenter = _routePoints.isNotEmpty
+        ? _routePoints[_routePoints.length ~/ 2]
+        : const LatLng(15.12, 120.625);
+
     return FlutterMap(
       mapController: _mapController,
-      options: const MapOptions(
-        initialCenter: LatLng(15.12, 120.625), // Center of route
-        initialZoom: 13,
+      options: MapOptions(
+        initialCenter: initialCenter,
+        initialZoom: 12,
       ),
       children: [
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.example.jeepjeep',
-        ),
-        PolylineLayer(
-          polylines: [
-            Polyline(
-              points: _buildRouteLine(),
-              color: Colors.blue,
-              strokeWidth: 4,
-            ),
-          ],
         ),
         MarkerLayer(
           markers: _buildDriverMarkersFromState(),
