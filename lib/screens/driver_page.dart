@@ -279,6 +279,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
   Future<void> _logout() async {
     try {
+      await _stopPublishing();
       await _auth.signOut();
       if (mounted) {
         Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
@@ -960,7 +961,11 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     if (_driverId == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Driver Dashboard')),
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: const SizedBox.shrink(),
+          title: const Text('Driver Dashboard'),
+        ),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -988,6 +993,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: const SizedBox.shrink(),
         title: const Text('Driver Dashboard'),
         actions: [
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
@@ -1091,6 +1098,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           );
         },
       ),
+      
     );
   }
 }

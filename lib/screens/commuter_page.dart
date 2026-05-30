@@ -23,7 +23,7 @@ class CommuterPage extends StatefulWidget {
   State<CommuterPage> createState() => _CommuterPageState();
 }
 
-class _CommuterPageState extends State<CommuterPage> {
+class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver {
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
   final MapController _mapController = MapController();
@@ -55,10 +55,28 @@ class _CommuterPageState extends State<CommuterPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _addNotification('Welcome to Commuter Portal! Tracking jeepneys for you.');
     _loadRegisteredName();
     _restoreSharingState();
     _fetchRouteGeometry();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _sharingSubscription?.cancel();
+    for (final t in _animationTimers.values) t.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // When app is backgrounded/closed, stop sharing so driver map no longer shows stale commuter markers.
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.inactive) {
+      _stopSharingToDrivers();
+    }
   }
 
   Future<void> _loadRegisteredName() async {
@@ -505,8 +523,10 @@ class _CommuterPageState extends State<CommuterPage> {
     _addNotification('Data refreshed!');
   }
 
-  void _logout() {
-    _auth.signOut();
+  Future<void> _logout() async {
+    // Ensure we stop sharing before signing out so drivers stop seeing the commuter marker.
+    await _stopSharingToDrivers();
+    await _auth.signOut();
     if (mounted) {
       Navigator.pushNamedAndRemoveUntil(context, '/login', (r) => false);
     }
@@ -755,6 +775,7 @@ class _CommuterPageState extends State<CommuterPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         title: const Text('Commuter Dashboard'),
         elevation: 4,
         actions: [
@@ -1254,14 +1275,4 @@ class _CommuterPageState extends State<CommuterPage> {
     );
   }
 
-  @override
-  void dispose() {
-    _sharingSubscription?.cancel();
-    for (final t in _animationTimers.values) {
-      t.cancel();
-    }
-    _animationTimers.clear();
-    _animating.clear();
-    super.dispose();
-  }
 }

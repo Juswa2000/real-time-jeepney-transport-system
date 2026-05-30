@@ -54,7 +54,7 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     if (route != null && context.mounted) {
-      Navigator.pushReplacementNamed(context, route);
+      Navigator.pushNamedAndRemoveUntil(context, route, (r) => false);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not determine your role. Please try again.')),
@@ -87,13 +87,20 @@ class _LoginPageState extends State<LoginPage> {
                     children: [
                       Center(
                         child: Image.asset(
-                          'img/capstone_logo.png',
+                          'img/jeep_icon_logo.png',
                           height: 120,
                           fit: BoxFit.contain,
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      const Text('Real-Time Jeepney Transport Support', style: TextStyle(fontSize: 16, color: Colors.black54), textAlign: TextAlign.center),
+                      const SizedBox(height: 8),
+                      const Center(
+                        child: Text(
+                          'SmartSakay',
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text('Real-Time Jeepney Transport Support', style: TextStyle(fontSize: 14, color: Colors.black54), textAlign: TextAlign.center),
                       const SizedBox(height: 24),
                       TextField(
                         controller: _emailController,

@@ -79,9 +79,9 @@ class _CommuterRegisterPageState extends State<CommuterRegisterPage> {
 
     if (!mounted) return;
     if (result == true) {
-      Navigator.pushReplacementNamed(context, dashboardRoute);
+      Navigator.pushNamedAndRemoveUntil(context, dashboardRoute, (route) => false);
     } else {
-      Navigator.pushReplacementNamed(context, '/login');
+      Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
     }
   }
 

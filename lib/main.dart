@@ -26,6 +26,7 @@ class JeepJeepApp extends StatelessWidget {
     return AppStateProvider(
       notifier: AppState(),
       child: MaterialApp(
+        debugShowCheckedModeBanner: false,
         title: 'JeepJeep Transport Strike',
         theme: ThemeData(
           useMaterial3: true,
