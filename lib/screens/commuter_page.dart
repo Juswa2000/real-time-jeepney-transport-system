@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -36,6 +37,9 @@ class _CommuterPageState extends State<CommuterPage> {
   final Set<String> _animating = {};
   
   final List<String> _notifications = [];
+  StreamSubscription<Position>? _sharingSubscription;
+  bool _sharingLocationToDrivers = false;
+  bool _sharingLocationInProgress = false;
   String _prevDemand = 'LOW';
   int _selectedTabIndex = 0;
   String? _registeredName;
@@ -53,6 +57,7 @@ class _CommuterPageState extends State<CommuterPage> {
     super.initState();
     _addNotification('Welcome to Commuter Portal! Tracking jeepneys for you.');
     _loadRegisteredName();
+    _restoreSharingState();
     _fetchRouteGeometry();
   }
 
@@ -81,6 +86,137 @@ class _CommuterPageState extends State<CommuterPage> {
         _registeredName = name;
       });
     }
+  }
+
+  Future<void> _restoreSharingState() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+      final commuterData = commuterDoc.data();
+      final sharing = (commuterData?['shareOnDriverMap'] as bool?) ?? false;
+      if (sharing) {
+        if (mounted) {
+          setState(() => _sharingLocationToDrivers = true);
+        }
+        await _startSharingToDrivers();
+      }
+    } catch (_) {
+      // ignore restore errors
+    }
+  }
+
+  Future<bool> _requestLocationAccess() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _addNotification('Location services are disabled. Turn them on to share your location.');
+      return false;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      _addNotification('Location permission denied. Enable it so drivers can see your pickup point.');
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _startSharingToDrivers() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    if (_sharingLocationInProgress) return;
+
+    final allowed = await _requestLocationAccess();
+    if (!allowed) return;
+
+    setState(() {
+      _sharingLocationInProgress = true;
+    });
+
+    try {
+      final commuterDoc = _firestore.collection('commuters').doc(user.uid);
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      await commuterDoc.set({
+        'shareOnDriverMap': true,
+        'gpsEnabled': true,
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'lastSharedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      _sharingSubscription?.cancel();
+      _sharingSubscription = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 10,
+        ),
+      ).listen((position) async {
+        try {
+          await commuterDoc.set({
+            'shareOnDriverMap': true,
+            'gpsEnabled': true,
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'lastSharedAt': FieldValue.serverTimestamp(),
+            'heading': position.heading,
+            'speed': position.speed,
+          }, SetOptions(merge: true));
+        } catch (_) {
+          // Ignore transient location write errors while live sharing.
+        }
+      }, onError: (_) {
+        _addNotification('Location sharing stopped due to a tracking error.');
+      });
+
+      if (mounted) {
+        setState(() {
+          _sharingLocationToDrivers = true;
+          _sharingLocationInProgress = false;
+        });
+      }
+      _addNotification('Your location is now visible to drivers on their live map.');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _sharingLocationInProgress = false);
+      }
+      _addNotification('Failed to start location sharing: $e');
+    }
+  }
+
+  Future<void> _stopSharingToDrivers() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    _sharingSubscription?.cancel();
+    _sharingSubscription = null;
+
+    try {
+      await _firestore.collection('commuters').doc(user.uid).set({
+        'shareOnDriverMap': false,
+        'gpsEnabled': false,
+        'lastSharedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // Ignore write errors on stop.
+    }
+
+    if (mounted) {
+      setState(() {
+        _sharingLocationToDrivers = false;
+        _sharingLocationInProgress = false;
+      });
+    }
+
+    _addNotification('You stopped sharing your location with drivers.');
   }
 
   void _addNotification(String msg) {
@@ -383,6 +519,67 @@ class _CommuterPageState extends State<CommuterPage> {
     );
   }
 
+  Widget _buildPassengerShareCard() {
+    final statusColor = _sharingLocationToDrivers ? Colors.green : Colors.grey;
+    final actionLabel = _sharingLocationToDrivers ? 'Stop Sharing' : 'Share My Location';
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Location Access for Drivers',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    _sharingLocationToDrivers ? 'Visible' : 'Hidden',
+                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _sharingLocationToDrivers
+                  ? 'Your current pickup point is shared with drivers, and they can see it in real time.'
+                  : 'Tap the button below to share your location so drivers can see where commuters are waiting.',
+              style: const TextStyle(color: Colors.black87, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _sharingLocationInProgress
+                    ? null
+                    : (_sharingLocationToDrivers ? _stopSharingToDrivers : _startSharingToDrivers),
+                icon: Icon(_sharingLocationToDrivers ? Icons.location_off : Icons.location_on),
+                label: Text(actionLabel),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _sharingLocationToDrivers ? Colors.red : Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildJeepneysTab(
     List<DocumentSnapshot<Map<String, dynamic>>> allDrivers,
     List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
@@ -394,6 +591,8 @@ class _CommuterPageState extends State<CommuterPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _buildPassengerShareCard(),
+          const SizedBox(height: 16),
           _buildRouteCard(routeStatus),
           const SizedBox(height: 16),
           _buildJeepneyStatusCard(activeDrivers.length),
@@ -1057,6 +1256,7 @@ class _CommuterPageState extends State<CommuterPage> {
 
   @override
   void dispose() {
+    _sharingSubscription?.cancel();
     for (final t in _animationTimers.values) {
       t.cancel();
     }

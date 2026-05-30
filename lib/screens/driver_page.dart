@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
 class DriverPage extends StatefulWidget {
   const DriverPage({super.key});
@@ -23,6 +25,9 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   String? _driverId;
   bool _isProcessing = false;
   final List<String> _notifications = [];
+  final MapController _mapController = MapController();
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _commuterLocationSubscription;
+  final Set<String> _sharedCommuterIds = <String>{};
   int _selectedTabIndex = 0;
 
   @override
@@ -30,6 +35,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _driverId = _auth.currentUser?.uid;
+    _listenForSharedCommuterLocations();
     _ensureDriverDocExists();
     _addSampleNotifications();
   }
@@ -37,6 +43,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _positionSubscription?.cancel();
+    _commuterLocationSubscription?.cancel();
     _seatController.dispose();
     super.dispose();
   }
@@ -101,6 +109,45 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         'Seats available for boarding',
       ]);
     }
+  }
+
+  void _listenForSharedCommuterLocations() {
+    _commuterLocationSubscription?.cancel();
+    _commuterLocationSubscription = _firestore.collection('commuters').snapshots().listen((snapshot) {
+      for (final change in snapshot.docChanges) {
+        final doc = change.doc;
+        final data = doc.data();
+        if (data == null) {
+          continue;
+        }
+
+        final isVisible = (data['shareOnDriverMap'] as bool?) ?? false;
+        final lat = data['latitude'];
+        final lon = data['longitude'];
+        final hasCoordinates = lat != null && lon != null;
+
+        if (change.type == DocumentChangeType.removed) {
+          _sharedCommuterIds.remove(doc.id);
+          continue;
+        }
+
+        if (isVisible && hasCoordinates) {
+          final wasAlreadyTracked = _sharedCommuterIds.contains(doc.id);
+          if (!wasAlreadyTracked) {
+            _sharedCommuterIds.add(doc.id);
+            final fullName = data['fullName'];
+            final name = (fullName is String ? fullName.trim() : null)?.isNotEmpty == true
+                ? fullName
+                : 'Commuter';
+            _addNotification('$name shared a pickup location on the live map.');
+          }
+        } else {
+          _sharedCommuterIds.remove(doc.id);
+        }
+      }
+    }, onError: (error) {
+      _addNotification('Unable to monitor commuter locations: $error');
+    });
   }
 
   void _addNotification(String message) {
@@ -595,42 +642,150 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildLiveMapTab() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.map,
-              size: 80,
-              color: Colors.blue[300],
+  Widget _buildLiveMapTab({
+    required double latitude,
+    required double longitude,
+    required bool gpsEnabled,
+  }) {
+    final mapCenter = latitude == 0 && longitude == 0
+        ? const LatLng(15.13, 120.65)
+        : LatLng(latitude, longitude);
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _firestore.collection('commuters').snapshots(),
+      builder: (context, snapshot) {
+        final commuterDocs = snapshot.data?.docs ?? [];
+        final visibleCommuters = commuterDocs.where((doc) {
+          final data = doc.data();
+          final shareOnMap = (data['shareOnDriverMap'] as bool?) ?? false;
+          final commuterGpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
+          final commuterLatitude = data['latitude'];
+          final commuterLongitude = data['longitude'];
+          return shareOnMap &&
+              commuterGpsEnabled &&
+              commuterLatitude != null &&
+              commuterLongitude != null;
+        }).toList();
+
+        final markers = visibleCommuters.map((doc) {
+          final data = doc.data();
+          final commuterName = (data['fullName'] as String?)?.trim().isNotEmpty == true
+              ? data['fullName'] as String
+              : 'Commuter';
+          final commuterLat = (data['latitude'] as num).toDouble();
+          final commuterLon = (data['longitude'] as num).toDouble();
+
+          return Marker(
+            point: LatLng(commuterLat, commuterLon),
+            width: 100,
+            height: 100,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: const Icon(Icons.person_pin_circle, color: Colors.white, size: 20),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    commuterName.split(' ').first,
+                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 24),
-            const Text(
-              'Live Map',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Real-time location tracking map will be displayed here.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16, color: Colors.black54),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _publishing ? _stopPublishing : _startPublishing,
-              icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
-              label: Text(_publishing ? 'Stop Broadcast' : 'Start Broadcast'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _publishing ? Colors.red : Colors.green,
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+          );
+        }).toList();
+
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Card(
+                elevation: 6,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Live commuter map',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: visibleCommuters.isEmpty ? Colors.grey : Colors.green,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '${visibleCommuters.length} commuters visible',
+                              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        visibleCommuters.isEmpty
+                            ? 'No commuters are currently sharing their location on the map.'
+                            : 'Visible commuter pickup points are shown in real time on the route map below.',
+                        style: const TextStyle(color: Colors.black54, fontSize: 13),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        onPressed: _publishing ? _stopPublishing : _startPublishing,
+                        icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
+                        label: Text(_publishing ? 'Stop Broadcast' : 'Start Broadcast'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _publishing ? Colors.red : Colors.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ],
-        ),
-      ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: FlutterMap(
+                    mapController: _mapController,
+                    options: MapOptions(
+                      initialCenter: mapCenter,
+                      initialZoom: 13,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.example.jeepjeep',
+                      ),
+                      MarkerLayer(markers: markers),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -894,7 +1049,11 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   longitude,
                   gpsEnabled,
                 ),
-                _buildLiveMapTab(),
+                _buildLiveMapTab(
+                  latitude: latitude,
+                  longitude: longitude,
+                  gpsEnabled: gpsEnabled,
+                ),
                 _buildNotificationTab(),
                 _buildProfileTab(
                   fullName,
