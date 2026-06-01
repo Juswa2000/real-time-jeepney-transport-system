@@ -1,8 +1,10 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'app_state.dart';
+import 'screens/admin_guard.dart';
 import 'screens/admin_page.dart';
 import 'screens/auth_gate.dart';
 import 'screens/commuter_page.dart';
@@ -45,12 +47,12 @@ class JeepJeepApp extends StatelessWidget {
         home: const AuthGate(),
         routes: {
           '/login': (context) => const LoginPage(),
-          '/register': (context) => const RegisterPage(),
-          '/register-driver': (context) => const DriverRegisterPage(),
-          '/register-commuter': (context) => const CommuterRegisterPage(),
-          '/commuter': (context) => const CommuterPage(),
-          '/driver': (context) => const DriverPage(),
-          '/admin': (context) => const AdminPage(),
+          '/register': (context) => kIsWeb ? const WebAccessDeniedPage() : const RegisterPage(),
+          '/register-driver': (context) => kIsWeb ? const WebAccessDeniedPage() : const DriverRegisterPage(),
+          '/register-commuter': (context) => kIsWeb ? const WebAccessDeniedPage() : const CommuterRegisterPage(),
+          '/commuter': (context) => kIsWeb ? const WebAccessDeniedPage() : const CommuterPage(),
+          '/driver': (context) => kIsWeb ? const WebAccessDeniedPage() : const DriverPage(),
+          '/admin': (context) => const AdminGuard(child: AdminPage()),
         },
       ),
     );

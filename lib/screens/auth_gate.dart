@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import 'admin_guard.dart';
 import 'admin_page.dart';
 import 'commuter_page.dart';
 import 'driver_page.dart';
@@ -24,6 +26,10 @@ class AuthGate extends StatelessWidget {
 
         if (!appState.isLoggedIn) {
           return const LoginPage();
+        }
+
+        if (kIsWeb && !appState.isAdmin) {
+          return const WebAccessDeniedPage();
         }
 
         switch (appState.userRole.toLowerCase()) {

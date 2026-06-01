@@ -1,0 +1,1 @@
+Patch about to be applied to admin_page.dart: will finish sidebar items, add _sidebarItem, _buildTopHeader, NotificationAlert, and _DemandChartPainter implementations.

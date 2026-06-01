@@ -75,8 +75,11 @@ class AppState extends ChangeNotifier {
 
   User? user;
   String userRole = '';
+  String? roleError;
   bool adminLoggedIn = false;
   bool authLoading = true;
+
+  bool get isAdmin => adminLoggedIn || userRole.toLowerCase() == 'admin';
 
   String get displayName {
     if (adminLoggedIn) return 'Admin';
@@ -109,6 +112,7 @@ class AppState extends ChangeNotifier {
   Future<void> _initializeAuth() async {
     _auth.authStateChanges().listen((firebaseUser) async {
       authLoading = true;
+      roleError = null;
       notifyListeners();
 
       user = firebaseUser;
@@ -176,6 +180,11 @@ class AppState extends ChangeNotifier {
 
       authLoading = false;
       notifyListeners();
+
+      if (userRole == 'unknown') {
+        return roleError ?? 'Unable to determine your account role. Please contact support.';
+      }
+
       return null;
     } on FirebaseAuthException catch (exception) {
       authLoading = false;
@@ -293,6 +302,7 @@ class AppState extends ChangeNotifier {
     await _auth.signOut();
     user = null;
     userRole = '';
+    roleError = null;
     notifyListeners();
   }
 
@@ -309,8 +319,16 @@ class AppState extends ChangeNotifier {
   Future<String> _loadUserRole(String uid) async {
     try {
       final snapshot = await _firestore.collection('users').doc(uid).get();
+      if (!snapshot.exists) {
+        roleError = 'Your user profile is missing. Please contact support.';
+        return 'unknown';
+      }
+
       final data = snapshot.data();
-      if (data == null) return '';
+      if (data == null) {
+        roleError = 'Your account profile is invalid. Please contact support.';
+        return 'unknown';
+      }
 
       final role = data['role'] as String?;
       if (role != null && role.isNotEmpty) {
@@ -324,9 +342,13 @@ class AppState extends ChangeNotifier {
         return 'driver';
       }
 
-      return '';
-    } catch (_) {
-      return '';
+      roleError = 'User role is not defined. Please contact support.';
+      return 'unknown';
+    } catch (exception, st) {
+      debugPrint('[AppState] role lookup failed: $exception');
+      debugPrint('$st');
+      roleError = 'Unable to load role information. Please try again later.';
+      return 'unknown';
     }
   }
 

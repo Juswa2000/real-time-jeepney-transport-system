@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../app_state.dart';
 
@@ -57,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
       Navigator.pushNamedAndRemoveUntil(context, route, (r) => false);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not determine your role. Please try again.')),
+        SnackBar(content: Text(appState.roleError ?? 'Could not determine your role. Please try again.')),
       );
     }
   }
@@ -123,12 +124,21 @@ class _LoginPageState extends State<LoginPage> {
                       const SizedBox(height: 12),
                       const Divider(),
                       const SizedBox(height: 12),
-                      TextButton(
-                        onPressed: () {
-                          Navigator.pushNamed(context, '/register');
-                        },
-                        child: const Text('Register as commuter or driver'),
+                      Text(
+                        kIsWeb
+                            ? 'This portal is for administrator access only. Please use the mobile application for driver and commuter accounts.'
+                            : 'For production, use a Firebase admin email/password account.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black54),
                       ),
+                      const SizedBox(height: 12),
+                      if (!kIsWeb)
+                        TextButton(
+                          onPressed: () {
+                            Navigator.pushNamed(context, '/register');
+                          },
+                          child: const Text('Register as commuter or driver'),
+                        ),
                     ],
                   ),
                 ),
