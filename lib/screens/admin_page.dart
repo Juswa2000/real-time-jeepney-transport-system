@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -140,20 +141,10 @@ class _AdminPageState extends State<AdminPage> {
     Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
   }
 
-  Future<void> _scrollToSection(GlobalKey key) async {
-    final context = key.currentContext;
-    if (context == null) return;
-    await Scrollable.ensureVisible(
-      context,
-      duration: const Duration(milliseconds: 400),
-      curve: Curves.easeInOut,
-      alignment: 0.1,
-    );
-  }
-
   Future<void> _setActiveSection(String section, GlobalKey key) async {
     setState(() => _activeSection = section);
-    await _scrollToSection(key);
+    // Auto-scrolling disabled: do not call `_scrollToSection` to prevent
+    // automatic scroll events when changing sections from the dashboard.
   }
 
   Widget _buildStatCard(
@@ -321,16 +312,67 @@ class _AdminPageState extends State<AdminPage> {
     );
   }
 
-  Widget _buildDemandChart() {
+  Widget _buildDemandChart({required int high, required int medium, required int low}) {
+    final maxCount = [high, medium, low].reduce((a, b) => a > b ? a : b);
+    final maxY = (maxCount + 1).toDouble();
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.grey.shade100,
         borderRadius: BorderRadius.circular(18),
       ),
-      padding: const EdgeInsets.all(16),
-      child: CustomPaint(
-        painter: _DemandChartPainter(),
-        child: const Center(child: Text('')),
+      padding: const EdgeInsets.all(8),
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxY < 1 ? 1 : maxY,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (_) => Colors.black87,
+              tooltipPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              tooltipBorderRadius: BorderRadius.circular(10),
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final label = ['High', 'Med', 'Low'][group.x.toInt()];
+                return BarTooltipItem(
+                  '$label\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  children: [
+                    TextSpan(
+                      text: rod.toY.toInt().toString(),
+                      style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.normal),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true)),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  const labels = ['High', 'Med', 'Low'];
+                  final idx = value.toInt();
+                  if (idx < 0 || idx >= labels.length) return const SizedBox.shrink();
+                  return SideTitleWidget(
+                    meta: meta,
+                    space: 6,
+                    child: Text(labels[idx], style: const TextStyle(fontSize: 12)),
+                  );
+                },
+              ),
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          gridData: FlGridData(show: false),
+          barGroups: [
+            BarChartGroupData(x: 0, barRods: [BarChartRodData(toY: high.toDouble(), color: Colors.deepPurple)], showingTooltipIndicators: [0]),
+            BarChartGroupData(x: 1, barRods: [BarChartRodData(toY: medium.toDouble(), color: Colors.indigo)], showingTooltipIndicators: [0]),
+            BarChartGroupData(x: 2, barRods: [BarChartRodData(toY: low.toDouble(), color: Colors.teal)], showingTooltipIndicators: [0]),
+          ],
+        ),
       ),
     );
   }
@@ -533,9 +575,10 @@ class _AdminPageState extends State<AdminPage> {
 
   Widget _buildDriverTable(
     BuildContext context,
-    List<DocumentSnapshot<Map<String, dynamic>>> drivers,
-  ) {
-    final visibleDrivers = drivers.take(3).toList();
+    List<DocumentSnapshot<Map<String, dynamic>>> drivers, {
+    int maxVisible = 10,
+  }) {
+    final visibleDrivers = drivers.take(maxVisible).toList();
 
     return Card(
       elevation: 6,
@@ -552,10 +595,11 @@ class _AdminPageState extends State<AdminPage> {
                   'Driver Monitoring',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                TextButton(
-                  onPressed: () {},
-                  child: const Text('View All'),
-                ),
+                if (_activeSection != 'Drivers')
+                  TextButton(
+                    onPressed: () => _setActiveSection('Drivers', _driversKey),
+                    child: const Text('View All'),
+                  ),
               ],
             ),
             const SizedBox(height: 12),
@@ -702,13 +746,11 @@ class _AdminPageState extends State<AdminPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
+              children: const [
+                Text(
                   'Passenger Demand',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                TextButton(onPressed: () {}, child: const Text('View Details')),
               ],
             ),
             const SizedBox(height: 18),
@@ -779,13 +821,11 @@ class _AdminPageState extends State<AdminPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
+              children: const [
+                Text(
                   'System Notifications',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                TextButton(onPressed: () {}, child: const Text('View All')),
               ],
             ),
             const SizedBox(height: 8),
@@ -831,8 +871,10 @@ class _AdminPageState extends State<AdminPage> {
   Widget _buildReportsPanel(
     List<DocumentSnapshot<Map<String, dynamic>>> drivers,
     List<DocumentSnapshot<Map<String, dynamic>>> commuters,
-    DocumentSnapshot<Map<String, dynamic>>? reportDoc,
-  ) {
+    DocumentSnapshot<Map<String, dynamic>>? reportDoc, {
+    bool showViewFullReportButton = true,
+    bool showChart = true,
+  }) {
     final activeDrivers = drivers
         .where((d) => (d.data()?['gpsEnabled'] as bool?) == true)
         .length;
@@ -847,6 +889,15 @@ class _AdminPageState extends State<AdminPage> {
     final dailyCommuterCount =
         reportDoc?.data()?['dailyActiveCommuters']?.toString() ??
         activeCommuters.toString();
+    final demandHigh = commuters
+      .where((c) => (c.data()?['demand'] as String?) == 'HIGH')
+      .length;
+    final demandMed = commuters
+      .where((c) => (c.data()?['demand'] as String?) == 'MEDIUM')
+      .length;
+    final demandLow = commuters
+      .where((c) => (c.data()?['demand'] as String?) == 'LOW')
+      .length;
 
     return Card(
       elevation: 6,
@@ -863,10 +914,11 @@ class _AdminPageState extends State<AdminPage> {
                   'Daily Report Summary',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                TextButton(
-                  onPressed: () {},
-                  child: const Text('View Full Report'),
-                ),
+                if (showViewFullReportButton)
+                  TextButton(
+                    onPressed: () {},
+                    child: const Text('View Full Report'),
+                  ),
               ],
             ),
             const SizedBox(height: 16),
@@ -907,13 +959,22 @@ class _AdminPageState extends State<AdminPage> {
                 );
               },
             ),
-            const SizedBox(height: 18),
-            const Text(
-              'Passenger Demand Overview',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(height: 160, child: _buildDemandChart()),
+            if (showChart) ...[
+              const SizedBox(height: 18),
+              const Text(
+                'Passenger Demand Overview',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 180,
+                child: _buildDemandChart(
+                  high: demandHigh,
+                  medium: demandMed,
+                  low: demandLow,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -1020,12 +1081,451 @@ class _AdminPageState extends State<AdminPage> {
                         final isWide = constraints.maxWidth >= 1100;
                         final sidebarWidth = isWide ? 260.0 : 0.0;
                         final panelTotalHeight = _mapPanelHeight + 64.0;
+                        final liveMapHeight = MediaQuery.of(context).size.height -
+                            (isWide ? 140.0 : 180.0);
+                        final mapPanelHeight = _activeSection == 'Live Map'
+                            ? (liveMapHeight < panelTotalHeight ? panelTotalHeight : liveMapHeight)
+                            : panelTotalHeight;
+
+                        final List<Widget> sectionWidgets = _activeSection == 'Live Map'
+                            ? [
+                                Center(
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    height: mapPanelHeight,
+                                    child: Container(
+                                      key: _mapKey,
+                                      child: _buildMapPanel(
+                                        driverDocs,
+                                        expand: true,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ]
+                            : _activeSection == 'Drivers'
+                                ? [
+                                    Align(
+                                      alignment: Alignment.topLeft,
+                                      child: Container(
+                                        key: _driversKey,
+                                        child: _buildDriverTable(
+                                          context,
+                                          driverDocs,
+                                        ),
+                                      ),
+                                    ),
+                                  ]
+                                : _activeSection == 'Commuters'
+                                    ? [
+                                        Align(
+                                          alignment: Alignment.topLeft,
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              SizedBox(
+                                                width: 520,
+                                                child: _buildStatCard(
+                                                  'Active Commuters',
+                                                  activeCommuters.toString(),
+                                                  'Commuters currently on route',
+                                                  Icons.people,
+                                                  Colors.blue,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Container(
+                                                key: _commutersKey,
+                                                child: _buildCommuterSection(
+                                                  commuterDocs,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ]
+                                    : _activeSection == 'Notifications'
+                                        ? [
+                                            SizedBox(
+                                              height: 600,
+                                              child: Container(
+                                                key: _notificationsKey,
+                                                child: _buildNotificationsPanel(
+                                                  generatedAlerts,
+                                                  notificationsSnapshot.data,
+                                                  expand: true,
+                                                ),
+                                              ),
+                                            ),
+                                          ]
+                                        : _activeSection == 'Reports'
+                                            ? [
+                                                Container(
+                                                  key: _reportsKey,
+                                                  child: _buildReportsPanel(
+                                                    driverDocs,
+                                                    commuterDocs,
+                                                    reportsSnapshot.data,
+                                                    showViewFullReportButton: false,
+                                                    showChart: true,
+                                                  ),
+                                                ),
+                                              ]
+                                            : [
+                                        if (isWide)
+                                          Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              SizedBox(
+                                                width: (constraints.maxWidth -
+                                                        sidebarWidth -
+                                                        40) *
+                                                    0.625,
+                                                child: SizedBox(
+                                                  height: mapPanelHeight,
+                                                  child: Container(
+                                                    key: _mapKey,
+                                                    child: _buildMapPanel(
+                                                      driverDocs,
+                                                      expand: true,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 20),
+                                              Expanded(
+                                                child: SizedBox(
+                                                  height: panelTotalHeight,
+                                                  child: Column(
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment.spaceBetween,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment.stretch,
+                                                    children: [
+                                                      Container(
+                                                        key: _commutersKey,
+                                                        child: _buildCommuterSection(
+                                                          commuterDocs,
+                                                        ),
+                                                      ),
+                                                      Expanded(
+                                                        child: Container(
+                                                          key: _notificationsKey,
+                                                          child:
+                                                              _buildNotificationsPanel(
+                                                            generatedAlerts,
+                                                            notificationsSnapshot.data,
+                                                            expand: true,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        else
+                                          Center(
+                                            child: SizedBox(
+                                              width: double.infinity,
+                                              height: mapPanelHeight,
+                                              child: Container(
+                                                key: _mapKey,
+                                                child: _buildMapPanel(
+                                                  driverDocs,
+                                                  expand: true,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        const SizedBox(height: 12),
+                                        if (isWide)
+                                          Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Expanded(
+                                                flex: 1,
+                                                child: Container(
+                                                  key: _driversKey,
+                                                  child: _buildDriverTable(
+                                                    context,
+                                                    driverDocs,
+                                                    maxVisible: 3,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 20),
+                                              Expanded(
+                                                child: Container(
+                                                  key: _reportsKey,
+                                                  child: _buildReportsPanel(
+                                                    driverDocs,
+                                                    commuterDocs,
+                                                    reportsSnapshot.data,
+                                                    showChart: false,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        else
+                                          Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              Container(
+                                                key: _driversKey,
+                                                child: _buildDriverTable(
+                                                  context,
+                                                  driverDocs,
+                                                  maxVisible: 3,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Container(
+                                                key: _commutersKey,
+                                                child: _buildCommuterSection(
+                                                  commuterDocs,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Container(
+                                                key: _notificationsKey,
+                                                child: _buildNotificationsPanel(
+                                                  generatedAlerts,
+                                                  notificationsSnapshot.data,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 12),
+                                              Container(
+                                                key: _reportsKey,
+                                                child: _buildReportsPanel(
+                                                  driverDocs,
+                                                  commuterDocs,
+                                                  reportsSnapshot.data,
+                                                  showChart: false,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                      ];
+
+                        final Widget statsWidgets = (_activeSection == 'Live Map' ||
+                                _activeSection == 'Commuters' ||
+                                _activeSection == 'Notifications' ||
+                                _activeSection == 'Reports')
+                            ? const SizedBox.shrink()
+                            : _activeSection == 'Drivers'
+                                ? (isWide
+                                    ? Row(
+                                        children: [
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                right: 5.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Total Registered Drivers',
+                                                totalDrivers.toString(),
+                                                'All registered jeepney drivers',
+                                                Icons.directions_bus,
+                                                Colors.indigo,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Active Jeepneys',
+                                                activeDrivers.toString(),
+                                                'Currently transmitting GPS data',
+                                                Icons.location_on,
+                                                Colors.green,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                left: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Offline Jeepneys',
+                                                offlineDrivers.toString(),
+                                                'Jeepneys with no GPS signal',
+                                                Icons.offline_bolt,
+                                                Colors.orange,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : Wrap(
+                                        spacing: 16,
+                                        runSpacing: 16,
+                                        children: [
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Total Registered Drivers',
+                                              totalDrivers.toString(),
+                                              'All registered jeepney drivers',
+                                              Icons.directions_bus,
+                                              Colors.indigo,
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Active Jeepneys',
+                                              activeDrivers.toString(),
+                                              'Currently transmitting GPS data',
+                                              Icons.location_on,
+                                              Colors.green,
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Offline Jeepneys',
+                                              offlineDrivers.toString(),
+                                              'Jeepneys with no GPS signal',
+                                              Icons.offline_bolt,
+                                              Colors.orange,
+                                            ),
+                                          ),
+                                        ],
+                                      ))
+                                : isWide
+                                    ? Row(
+                                        children: [
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                right: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Total Registered Drivers',
+                                                totalDrivers.toString(),
+                                                'All registered jeepney drivers',
+                                                Icons.directions_bus,
+                                                Colors.indigo,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Active Jeepneys',
+                                                activeDrivers.toString(),
+                                                'Currently transmitting GPS data',
+                                                Icons.location_on,
+                                                Colors.green,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Offline Jeepneys',
+                                                offlineDrivers.toString(),
+                                                'Jeepneys with no GPS signal',
+                                                Icons.offline_bolt,
+                                                Colors.orange,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                left: 8.0,
+                                              ),
+                                              child: _buildStatCard(
+                                                'Active Commuters',
+                                                activeCommuters.toString(),
+                                                'Commuters currently on route',
+                                                Icons.people,
+                                                Colors.blue,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : Wrap(
+                                        spacing: 16,
+                                        runSpacing: 16,
+                                        children: [
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Total Registered Drivers',
+                                              totalDrivers.toString(),
+                                              'All registered jeepney drivers',
+                                              Icons.directions_bus,
+                                              Colors.indigo,
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Active Jeepneys',
+                                              activeDrivers.toString(),
+                                              'Currently transmitting GPS data',
+                                              Icons.location_on,
+                                              Colors.green,
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Offline Jeepneys',
+                                              offlineDrivers.toString(),
+                                              'Jeepneys with no GPS signal',
+                                              Icons.offline_bolt,
+                                              Colors.orange,
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: _buildStatCard(
+                                              'Active Commuters',
+                                              activeCommuters.toString(),
+                                              'Commuters currently on route',
+                                              Icons.people,
+                                              Colors.blue,
+                                            ),
+                                          ),
+                                        ],
+                                      );
 
                         return Scaffold(
                           appBar: isWide
                               ? null
                               : AppBar(
-                                  title: const Text('Admin Dashboard'),
+                                  title: Text(_activeSection == 'Commuters'
+                                      ? 'Commuter Monitoring'
+                                      : _activeSection == 'Live Map'
+                                          ? 'Live Map'
+                                          : _activeSection == 'Drivers'
+                                              ? 'Driver Monitoring'
+                                              : _activeSection == 'Notifications'
+                                                  ? 'Notifications'
+                                                  : _activeSection == 'Reports'
+                                                      ? 'Reports'
+                                                      : 'Admin Dashboard'),
                                   elevation: 0,
                                   backgroundColor: Colors.white,
                                   foregroundColor: Colors.black87,
@@ -1058,259 +1558,8 @@ class _AdminPageState extends State<AdminPage> {
                                           child: _buildTopHeader(appState),
                                         ),
                                         const SizedBox(height: 16),
-                                        if (isWide)
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                        right: 8.0,
-                                                      ),
-                                                  child: _buildStatCard(
-                                                    'Total Registered Drivers',
-                                                    totalDrivers.toString(),
-                                                    'All registered jeepney drivers',
-                                                    Icons.directions_bus,
-                                                    Colors.indigo,
-                                                  ),
-                                                ),
-                                              ),
-                                              Expanded(
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 8.0,
-                                                      ),
-                                                  child: _buildStatCard(
-                                                    'Active Jeepneys',
-                                                    activeDrivers.toString(),
-                                                    'Currently transmitting GPS data',
-                                                    Icons.location_on,
-                                                    Colors.green,
-                                                  ),
-                                                ),
-                                              ),
-                                              Expanded(
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 8.0,
-                                                      ),
-                                                  child: _buildStatCard(
-                                                    'Offline Jeepneys',
-                                                    offlineDrivers.toString(),
-                                                    'Jeepneys with no GPS signal',
-                                                    Icons.offline_bolt,
-                                                    Colors.orange,
-                                                  ),
-                                                ),
-                                              ),
-                                              Expanded(
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                        left: 8.0,
-                                                      ),
-                                                  child: _buildStatCard(
-                                                    'Active Commuters',
-                                                    activeCommuters.toString(),
-                                                    'Commuters currently on route',
-                                                    Icons.people,
-                                                    Colors.blue,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          )
-                                        else
-                                          Wrap(
-                                            spacing: 16,
-                                            runSpacing: 16,
-                                            children: [
-                                              SizedBox(
-                                                width: double.infinity,
-                                                child: _buildStatCard(
-                                                  'Total Registered Drivers',
-                                                  totalDrivers.toString(),
-                                                  'All registered jeepney drivers',
-                                                  Icons.directions_bus,
-                                                  Colors.indigo,
-                                                ),
-                                              ),
-                                              SizedBox(
-                                                width: double.infinity,
-                                                child: _buildStatCard(
-                                                  'Active Jeepneys',
-                                                  activeDrivers.toString(),
-                                                  'Currently transmitting GPS data',
-                                                  Icons.location_on,
-                                                  Colors.green,
-                                                ),
-                                              ),
-                                              SizedBox(
-                                                width: double.infinity,
-                                                child: _buildStatCard(
-                                                  'Offline Jeepneys',
-                                                  offlineDrivers.toString(),
-                                                  'Jeepneys with no GPS signal',
-                                                  Icons.offline_bolt,
-                                                  Colors.orange,
-                                                ),
-                                              ),
-                                              SizedBox(
-                                                width: double.infinity,
-                                                child: _buildStatCard(
-                                                  'Active Commuters',
-                                                  activeCommuters.toString(),
-                                                  'Commuters currently on route',
-                                                  Icons.people,
-                                                  Colors.blue,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        const SizedBox(height: 20),
-                                        if (isWide)
-                                          Row(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              SizedBox(
-                                                width:
-                                                    (constraints.maxWidth -
-                                                        sidebarWidth -
-                                                        40) *
-                                                    0.625,
-                                                child: SizedBox(
-                                                  height: panelTotalHeight,
-                                                  child: Container(
-                                                    key: _mapKey,
-                                                    child: _buildMapPanel(
-                                                      driverDocs,
-                                                      expand: true,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 20),
-                                              Expanded(
-                                                child: SizedBox(
-                                                  height: panelTotalHeight,
-                                                  child: Column(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .spaceBetween,
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .stretch,
-                                                    children: [
-                                                      Container(
-                                                        key: _commutersKey,
-                                                        child:
-                                                            _buildCommuterSection(
-                                                          commuterDocs,
-                                                        ),
-                                                      ),
-                                                      Expanded(
-                                                        child: Container(
-                                                          key: _notificationsKey,
-                                                          child:
-                                                              _buildNotificationsPanel(
-                                                            generatedAlerts,
-                                                            notificationsSnapshot
-                                                                .data,
-                                                            expand: true,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          )
-                                        else
-                                          Center(
-                                            child: SizedBox(
-                                              width: double.infinity,
-                                              child: Container(
-                                                key: _mapKey,
-                                                child: _buildMapPanel(
-                                                  driverDocs,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        const SizedBox(height: 20),
-                                        isWide
-                                            ? Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Expanded(
-                                                    flex: 1,
-                                                    child: Container(
-                                                      key: _driversKey,
-                                                      child: _buildDriverTable(
-                                                        context,
-                                                        driverDocs,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 20),
-                                                  Expanded(
-                                                    child: Container(
-                                                      key: _reportsKey,
-                                                      child: _buildReportsPanel(
-                                                        driverDocs,
-                                                        commuterDocs,
-                                                        reportsSnapshot.data,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              )
-                                            : Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.stretch,
-                                                children: [
-                                                  Container(
-                                                    key: _driversKey,
-                                                    child: _buildDriverTable(
-                                                      context,
-                                                      driverDocs,
-                                                    ),
-                                                  ),
-                                                  const SizedBox(height: 20),
-                                                  Container(
-                                                    key: _commutersKey,
-                                                    child:
-                                                        _buildCommuterSection(
-                                                          commuterDocs,
-                                                        ),
-                                                  ),
-                                                  const SizedBox(height: 20),
-                                                  Container(
-                                                    key: _notificationsKey,
-                                                    child:
-                                                        _buildNotificationsPanel(
-                                                          generatedAlerts,
-                                                          notificationsSnapshot
-                                                              .data,
-                                                        ),
-                                                  ),
-                                                  const SizedBox(height: 20),
-                                                  Container(
-                                                    key: _reportsKey,
-                                                    child: _buildReportsPanel(
-                                                      driverDocs,
-                                                      commuterDocs,
-                                                      reportsSnapshot.data,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
+                                        statsWidgets,
+                                        ...sectionWidgets,
                                       ],
                                     ),
                                   ),
@@ -1332,6 +1581,9 @@ class _AdminPageState extends State<AdminPage> {
   }
 
   Widget _buildSidebar(BuildContext context) {
+    final appState = AppStateProvider.of(context);
+    final displayName = appState.displayName.isNotEmpty ? appState.displayName : 'Admin account';
+
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -1401,6 +1653,54 @@ class _AdminPageState extends State<AdminPage> {
                 selected: _activeSection == 'Reports',
                 onTap: () => _setActiveSection('Reports', _reportsKey),
               ),
+              const SizedBox(height: 24),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 8.0),
+                  child: PopupMenuButton<String>(
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'profile':
+                          _showProfileDialog(context, AppStateProvider.of(context).displayName);
+                          break;
+                        case 'change_password':
+                          _showChangePasswordDialog(context);
+                          break;
+                        case 'account_settings':
+                          _showAccountSettingsDialog(context);
+                          break;
+                      }
+                    },
+                    position: PopupMenuPosition.under,
+                    offset: const Offset(0, 8),
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 'profile', child: Text('Profile')),
+                      PopupMenuItem(value: 'change_password', child: Text('Change Password')),
+                      PopupMenuItem(value: 'account_settings', child: Text('Account Settings')),
+                    ],
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 16,
+                          backgroundColor: Colors.grey.shade200,
+                          child: const Icon(Icons.person, color: Colors.black54, size: 18),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          displayName,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
               const Spacer(),
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -1422,6 +1722,78 @@ class _AdminPageState extends State<AdminPage> {
           ),
         ),
       ),
+    );
+  }
+
+
+  void _showProfileDialog(BuildContext context, String user) {
+    final appState = AppStateProvider.of(context);
+    final email = appState.user?.email ?? 'Not available';
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Profile'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Name: $user'),
+              const SizedBox(height: 8),
+              Text('Email: $email'),
+              const SizedBox(height: 8),
+              const Text('Role: Admin'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showChangePasswordDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Change Password'),
+          content: const Text(
+            'To change your password, please use your account settings or contact support.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showAccountSettingsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Account Settings'),
+          content: const Text(
+            'Account settings are managed here. You can update your profile, notification preferences, and security settings.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1457,40 +1829,34 @@ class _AdminPageState extends State<AdminPage> {
 
   Widget _buildTopHeader(AppState appState) {
     final user = appState.displayName;
+    final title = _activeSection == 'Live Map'
+        ? 'Live Map'
+        : (_activeSection == 'Drivers'
+            ? 'Driver Monitoring'
+            : (_activeSection == 'Commuters'
+                ? 'Commuter Monitoring'
+                : (_activeSection == 'Notifications'
+                    ? 'Notifications'
+                    : (_activeSection == 'Reports'
+                        ? 'Reports'
+                        : 'Admin Dashboard'))));
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Admin Dashboard',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 6),
-            Text('Welcome back, $user', style: const TextStyle(color: Colors.black54)),
+            if (_activeSection == 'Dashboard') ...[
+              const SizedBox(height: 6),
+              Text('Welcome back, $user', style: const TextStyle(color: Colors.black54)),
+            ],
           ],
         ),
-        Row(
-          children: [
-            IconButton(
-              onPressed: () {},
-              icon: const Icon(Icons.search),
-              color: Colors.black54,
-            ),
-            const SizedBox(width: 8),
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: Colors.grey.shade200,
-              child: const Icon(Icons.person, color: Colors.black54),
-            ),
-            const SizedBox(width: 12),
-            TextButton(
-              onPressed: () => _logout(context),
-              child: const Text('Logout'),
-            ),
-          ],
-        ),
+        const SizedBox.shrink(),
       ],
     );
   }

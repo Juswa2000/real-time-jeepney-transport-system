@@ -1,0 +1,41 @@
+1320:                                                           key: _notificationsKey,
+1321:                                                           child:
+1322:                                                               _buildNotificationsPanel(
+1323:                                                             generatedAlerts,
+1324:                                                             notificationsSnapshot
+1325:                                                                 .data,
+1326:                                                           ),
+1327:                                                         ),
+1328:                                                         const SizedBox(height: 20),
+1329:                                                         Container(
+1330:                                                           key: _reportsKey,
+1331:                                                           child: _buildReportsPanel(
+1332:                                                             driverDocs,
+1333:                                                             commuterDocs,
+1334:                                                             reportsSnapshot.data,
+1335:                                                           ),
+1336:                                                         ),
+1337:                                                       ],
+1338:                                                     ),
+1339:                                             ],
+1340:                                           ),
+1341:                                   ),
+1342:                                 ),
+1343:                               ],
+1344:                             ),
+1345:                           ),
+1346:                         );
+1347:                       },
+1348:                     );
+1349:                   },
+1350:                 );
+1351:               },
+1352:             );
+1353:           },
+1354:         );
+1355:       },
+1356:     );
+1357:   }
+1358: 
+1359:   Widget _buildSidebar(BuildContext context) {
+1360:     return Container(

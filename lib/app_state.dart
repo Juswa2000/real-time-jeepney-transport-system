@@ -199,8 +199,8 @@ class AppState extends ChangeNotifier {
     String role,
     String name, {
     String? contactNumber,
-    String? licenseNumber,
     String? plateNumber,
+    int? availableSeats,
     String? route,
   }) async {
     try {
@@ -222,7 +222,6 @@ class AppState extends ChangeNotifier {
 
         if (role == 'driver') {
           userData['contactNumber'] = contactNumber ?? '';
-          userData['licenseNumber'] = licenseNumber ?? '';
           userData['plateNumber'] = plateNumber ?? '';
           userData['route'] = route ?? '';
         }
@@ -236,10 +235,9 @@ class AppState extends ChangeNotifier {
             'fullName': name,
             'email': email,
             'contactNumber': contactNumber ?? '',
-            'licenseNumber': licenseNumber ?? '',
             'plateNumber': plateNumber ?? '',
             'route': route ?? '',
-            'availableSeats': 10,
+            'availableSeats': availableSeats ?? 10,
             'statusColor': 'green',
             'statusLabel': 'Vacant',
             'latitude': 15.13,
@@ -335,8 +333,7 @@ class AppState extends ChangeNotifier {
         return role;
       }
 
-      final hasDriverFields = (data['licenseNumber'] as String?)?.isNotEmpty == true ||
-          (data['plateNumber'] as String?)?.isNotEmpty == true ||
+      final hasDriverFields = (data['plateNumber'] as String?)?.isNotEmpty == true ||
           (data['route'] as String?)?.isNotEmpty == true;
       if (hasDriverFields) {
         return 'driver';

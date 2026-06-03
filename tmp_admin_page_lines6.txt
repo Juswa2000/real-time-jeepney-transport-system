@@ -1,0 +1,41 @@
+1130:                                           )
+1131:                                         else
+1132:                                           Wrap(
+1133:                                             spacing: 16,
+1134:                                             runSpacing: 16,
+1135:                                             children: [
+1136:                                               SizedBox(
+1137:                                                 width: double.infinity,
+1138:                                                 child: _buildStatCard(
+1139:                                                   'Total Registered Drivers',
+1140:                                                   totalDrivers.toString(),
+1141:                                                   'All registered jeepney drivers',
+1142:                                                   Icons.directions_bus,
+1143:                                                   Colors.indigo,
+1144:                                                 ),
+1145:                                               ),
+1146:                                               SizedBox(
+1147:                                                 width: double.infinity,
+1148:                                                 child: _buildStatCard(
+1149:                                                   'Active Jeepneys',
+1150:                                                   activeDrivers.toString(),
+1151:                                                   'Currently transmitting GPS data',
+1152:                                                   Icons.location_on,
+1153:                                                   Colors.green,
+1154:                                                 ),
+1155:                                               ),
+1156:                                               SizedBox(
+1157:                                                 width: double.infinity,
+1158:                                                 child: _buildStatCard(
+1159:                                                   'Offline Jeepneys',
+1160:                                                   offlineDrivers.toString(),
+1161:                                                   'Jeepneys with no GPS signal',
+1162:                                                   Icons.offline_bolt,
+1163:                                                   Colors.orange,
+1164:                                                 ),
+1165:                                               ),
+1166:                                               SizedBox(
+1167:                                                 width: double.infinity,
+1168:                                                 child: _buildStatCard(
+1169:                                                   'Active Commuters',
+1170:                                                   activeCommuters.toString(),

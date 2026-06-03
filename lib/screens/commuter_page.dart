@@ -23,7 +23,8 @@ class CommuterPage extends StatefulWidget {
   State<CommuterPage> createState() => _CommuterPageState();
 }
 
-class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver {
+class _CommuterPageState extends State<CommuterPage>
+    with WidgetsBindingObserver {
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
   final MapController _mapController = MapController();
@@ -35,11 +36,13 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
   final Map<String, Timer> _animationTimers = {};
   // Prevent overlapping animations
   final Set<String> _animating = {};
-  
+
   final List<String> _notifications = [];
   StreamSubscription<Position>? _sharingSubscription;
   bool _sharingLocationToDrivers = false;
   bool _sharingLocationInProgress = false;
+  bool _demandRequested = false;
+  bool _demandInProgress = false;
   String _prevDemand = 'LOW';
   int _selectedTabIndex = 0;
   String? _registeredName;
@@ -74,7 +77,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     // When app is backgrounded/closed, stop sharing so driver map no longer shows stale commuter markers.
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.inactive) {
       _stopSharingToDrivers();
     }
   }
@@ -91,7 +96,10 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
         name = (userData['name'] as String?)?.trim() ?? name;
       }
       if (name == 'Commuter' || name.isEmpty) {
-        final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+        final commuterDoc = await _firestore
+            .collection('commuters')
+            .doc(user.uid)
+            .get();
         final commuterData = commuterDoc.data();
         name = (commuterData?['fullName'] as String?)?.trim() ?? name;
       }
@@ -111,13 +119,16 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
     if (user == null) return;
 
     try {
-      final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+      final commuterDoc = await _firestore
+          .collection('commuters')
+          .doc(user.uid)
+          .get();
       final commuterData = commuterDoc.data();
       final sharing = (commuterData?['shareOnDriverMap'] as bool?) ?? false;
+      // Restore any previously requested demand state
+      final demand = (commuterData?['demand'] as String?) ?? 'LOW';
+      if (mounted) setState(() => _demandRequested = demand == 'HIGH');
       if (sharing) {
-        if (mounted) {
-          setState(() => _sharingLocationToDrivers = true);
-        }
         await _startSharingToDrivers();
       }
     } catch (_) {
@@ -125,10 +136,54 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _requestRide() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    if (_demandInProgress) return;
+
+    setState(() => _demandInProgress = true);
+    try {
+      final commuterDoc = _firestore.collection('commuters').doc(user.uid);
+      await commuterDoc.set({
+        'demand': 'HIGH',
+        'demandRequestedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) setState(() => _demandRequested = true);
+      _addNotification('Ride requested. Drivers will see your request.');
+    } catch (e) {
+      _addNotification('Failed to request ride: $e');
+    } finally {
+      if (mounted) setState(() => _demandInProgress = false);
+    }
+  }
+
+  Future<void> _cancelRideRequest() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    if (_demandInProgress) return;
+
+    setState(() => _demandInProgress = true);
+    try {
+      final commuterDoc = _firestore.collection('commuters').doc(user.uid);
+      await commuterDoc.set({
+        'demand': 'LOW',
+        'demandCancelledAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) setState(() => _demandRequested = false);
+      _addNotification('Ride request cancelled.');
+    } catch (e) {
+      _addNotification('Failed to cancel request: $e');
+    } finally {
+      if (mounted) setState(() => _demandInProgress = false);
+    }
+  }
+
   Future<bool> _requestLocationAccess() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      _addNotification('Location services are disabled. Turn them on to share your location.');
+      _addNotification(
+        'Location services are disabled. Turn them on to share your location.',
+      );
       return false;
     }
 
@@ -137,8 +192,11 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
       permission = await Geolocator.requestPermission();
     }
 
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      _addNotification('Location permission denied. Enable it so drivers can see your pickup point.');
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      _addNotification(
+        'Location permission denied. Enable it so drivers can see your pickup point.',
+      );
       return false;
     }
 
@@ -172,28 +230,34 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
       }, SetOptions(merge: true));
 
       _sharingSubscription?.cancel();
-      _sharingSubscription = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.best,
-          distanceFilter: 10,
-        ),
-      ).listen((position) async {
-        try {
-          await commuterDoc.set({
-            'shareOnDriverMap': true,
-            'gpsEnabled': true,
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-            'lastSharedAt': FieldValue.serverTimestamp(),
-            'heading': position.heading,
-            'speed': position.speed,
-          }, SetOptions(merge: true));
-        } catch (_) {
-          // Ignore transient location write errors while live sharing.
-        }
-      }, onError: (_) {
-        _addNotification('Location sharing stopped due to a tracking error.');
-      });
+      _sharingSubscription =
+          Geolocator.getPositionStream(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.best,
+              distanceFilter: 10,
+            ),
+          ).listen(
+            (position) async {
+              try {
+                await commuterDoc.set({
+                  'shareOnDriverMap': true,
+                  'gpsEnabled': true,
+                  'latitude': position.latitude,
+                  'longitude': position.longitude,
+                  'lastSharedAt': FieldValue.serverTimestamp(),
+                  'heading': position.heading,
+                  'speed': position.speed,
+                }, SetOptions(merge: true));
+              } catch (_) {
+                // Ignore transient location write errors while live sharing.
+              }
+            },
+            onError: (_) {
+              _addNotification(
+                'Location sharing stopped due to a tracking error.',
+              );
+            },
+          );
 
       if (mounted) {
         setState(() {
@@ -201,7 +265,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
           _sharingLocationInProgress = false;
         });
       }
-      _addNotification('Your location is now visible to drivers on their live map.');
+      _addNotification(
+        'Your location is now visible to drivers on their live map.',
+      );
     } catch (e) {
       if (mounted) {
         setState(() => _sharingLocationInProgress = false);
@@ -240,10 +306,23 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
   void _addNotification(String msg) {
     if (mounted) {
       setState(() {
-        _notifications.insert(0, '[${DateTime.now().toString().split('.')[0]}] $msg');
+        _notifications.insert(
+          0,
+          '[${DateTime.now().toString().split('.')[0]}] $msg',
+        );
         if (_notifications.length > 10) _notifications.removeLast();
       });
     }
+  }
+
+  void _maybeNotifyDemandChange(String currentDemand) {
+    if (currentDemand == _prevDemand) return;
+    _prevDemand = currentDemand;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _addNotification('Passenger demand: $currentDemand');
+      }
+    });
   }
 
   // Determine route status based on active drivers and passenger demand
@@ -256,61 +335,84 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
   // Build map markers for each active driver
   // Build markers based on the last-known animated positions
   List<Marker> _buildDriverMarkersFromState() {
-    return _driverPositions.entries.map((entry) {
-      final id = entry.key;
-      final pos = entry.value;
-      final meta = _driverMeta[id] ?? {};
-      final gpsEnabled = (meta['gpsEnabled'] as bool?) ?? true;
-      if (!gpsEnabled || pos.latitude == 0 && pos.longitude == 0) return null;
+    return _driverPositions.entries
+        .map((entry) {
+          final id = entry.key;
+          final pos = entry.value;
+          final meta = _driverMeta[id] ?? {};
+          final gpsEnabled = (meta['gpsEnabled'] as bool?) ?? true;
+          if (!gpsEnabled || pos.latitude == 0 && pos.longitude == 0)
+            return null;
 
-      final plateNumber = meta['plateNumber'] as String? ?? 'Unknown';
-      final fullName = meta['fullName'] as String? ?? 'Driver';
-      final statusColor = (meta['statusColor'] as String?)?.toLowerCase() ?? 'blue';
+          final plateNumber = meta['plateNumber'] as String? ?? 'Unknown';
+          final fullName = meta['fullName'] as String? ?? 'Driver';
+          final statusColor =
+              (meta['statusColor'] as String?)?.toLowerCase() ?? 'blue';
 
-      final markerColor = statusColor == 'green'
-          ? Colors.green
-          : statusColor == 'orange'
+          final markerColor = statusColor == 'green'
+              ? Colors.green
+              : statusColor == 'orange'
               ? Colors.orange
               : statusColor == 'red'
-                  ? Colors.red
-                  : Colors.blue;
+              ? Colors.red
+              : Colors.blue;
 
-      return Marker(
-        point: pos,
-        width: 80,
-        height: 80,
-        child: GestureDetector(
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('$fullName ($plateNumber)')),
-            );
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: markerColor,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2),
-                ),
-                child: const Icon(Icons.directions_car, color: Colors.white, size: 20),
+          return Marker(
+            point: pos,
+            width: 80,
+            height: 80,
+            child: GestureDetector(
+              onTap: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('$fullName ($plateNumber)')),
+                );
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: markerColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                    child: const Icon(
+                      Icons.directions_car,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                  Text(
+                    plateNumber,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      backgroundColor: Colors.white,
+                    ),
+                  ),
+                ],
               ),
-              Text(plateNumber, style: const TextStyle(fontSize: 10, backgroundColor: Colors.white))
-            ],
-          ),
-        ),
-      );
-    }).whereType<Marker>().toList();
+            ),
+          );
+        })
+        .whereType<Marker>()
+        .toList();
   }
 
   LatLng _lerpLatLng(LatLng a, LatLng b, double t) {
-    return LatLng(a.latitude + (b.latitude - a.latitude) * t, a.longitude + (b.longitude - a.longitude) * t);
+    return LatLng(
+      a.latitude + (b.latitude - a.latitude) * t,
+      a.longitude + (b.longitude - a.longitude) * t,
+    );
   }
 
-  void _startMarkerAnimation(String id, LatLng from, LatLng to, {int durationMs = 600}) {
+  void _startMarkerAnimation(
+    String id,
+    LatLng from,
+    LatLng to, {
+    int durationMs = 600,
+  }) {
     if (_animating.contains(id)) return;
     _animating.add(id);
 
@@ -439,7 +541,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
     _usingFallbackRoute = false;
 
     try {
-      final url = Uri.parse('https://api.openrouteservice.org/v2/directions/driving-car/geojson');
+      final url = Uri.parse(
+        'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+      );
       final response = await http.post(
         url,
         headers: {
@@ -458,7 +562,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
       );
 
       if (response.statusCode != 200) {
-        throw Exception('OpenRouteService request failed with status ${response.statusCode}');
+        throw Exception(
+          'OpenRouteService request failed with status ${response.statusCode}',
+        );
       }
 
       final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -488,7 +594,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
       }
 
       if (routePoints.isEmpty) {
-        throw Exception('Unable to decode route geometry from OpenRouteService response.');
+        throw Exception(
+          'Unable to decode route geometry from OpenRouteService response.',
+        );
       }
 
       if (mounted) {
@@ -514,7 +622,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
 
   List<LatLng> _decodePolyline(String encoded) {
     final decoded = PolylinePoints.decodePolyline(encoded);
-    return decoded.map((point) => LatLng(point.latitude, point.longitude)).toList();
+    return decoded
+        .map((point) => LatLng(point.latitude, point.longitude))
+        .toList();
   }
 
   void _refreshData() {
@@ -532,7 +642,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
     }
   }
 
-  Widget _buildMapTab(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+  Widget _buildMapTab(
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+  ) {
     return SizedBox(
       height: double.infinity,
       child: _buildMapWidget(activeDrivers),
@@ -541,7 +653,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
 
   Widget _buildPassengerShareCard() {
     final statusColor = _sharingLocationToDrivers ? Colors.green : Colors.grey;
-    final actionLabel = _sharingLocationToDrivers ? 'Stop Sharing' : 'Share My Location';
+    final actionLabel = _sharingLocationToDrivers
+        ? 'Stop Sharing'
+        : 'Share My Location';
 
     return Card(
       elevation: 4,
@@ -559,14 +673,21 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: statusColor,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
                     _sharingLocationToDrivers ? 'Visible' : 'Hidden',
-                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -584,16 +705,50 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
               child: ElevatedButton.icon(
                 onPressed: _sharingLocationInProgress
                     ? null
-                    : (_sharingLocationToDrivers ? _stopSharingToDrivers : _startSharingToDrivers),
-                icon: Icon(_sharingLocationToDrivers ? Icons.location_off : Icons.location_on),
+                    : (_sharingLocationToDrivers
+                          ? _stopSharingToDrivers
+                          : _startSharingToDrivers),
+                icon: Icon(
+                  _sharingLocationToDrivers
+                      ? Icons.location_off
+                      : Icons.location_on,
+                ),
                 label: Text(actionLabel),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _sharingLocationToDrivers ? Colors.red : Colors.green,
+                  backgroundColor: _sharingLocationToDrivers
+                      ? Colors.red
+                      : Colors.green,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
               ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _demandInProgress
+                    ? null
+                    : (_demandRequested ? _cancelRideRequest : _requestRide),
+                icon: Icon(_demandRequested ? Icons.cancel : Icons.add_alert),
+                label: Text(
+                  _demandRequested ? 'Cancel Request' : 'Request Ride',
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _demandRequested
+                      ? Colors.red
+                      : Colors.deepPurple,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            if (_demandRequested) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Ride requested — drivers notified.',
+                style: TextStyle(color: Colors.black54),
+              ),
+            ],
           ],
         ),
       ),
@@ -641,7 +796,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
         children: [
           Card(
             elevation: 6,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -671,10 +828,7 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
                   const SizedBox(height: 4),
                   Text(
                     user?.email ?? 'No email',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.black54,
-                    ),
+                    style: TextStyle(fontSize: 14, color: Colors.black54),
                   ),
                 ],
               ),
@@ -683,7 +837,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
           const SizedBox(height: 24),
           Card(
             elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -807,33 +963,30 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
           }
 
           final drivers = snapshot.data?.docs ?? [];
-          
+
           // Filter only drivers with valid GPS data
-          final activeDrivers = drivers
-              .where((doc) {
-                final data = doc.data();
-                final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
-                return gpsEnabled &&
-                    data['latitude'] != null &&
-                    data['longitude'] != null;
-              })
-              .toList();
+          final activeDrivers = drivers.where((doc) {
+            final data = doc.data();
+            final gpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
+            return gpsEnabled &&
+                data['latitude'] != null &&
+                data['longitude'] != null;
+          }).toList();
 
           // Calculate demand from notifications (simple approach)
           final highDemandCount = drivers
               .where((doc) => (doc.data()['demand'] as String?) == 'HIGH')
               .length;
-          final currentDemand =
-              highDemandCount > (drivers.length ~/ 2) ? 'HIGH' : 'LOW';
+          final currentDemand = highDemandCount > (drivers.length ~/ 2)
+              ? 'HIGH'
+              : 'LOW';
 
-          // Notify on demand change
-          if (currentDemand != _prevDemand) {
-            _addNotification('Passenger demand: $currentDemand');
-            _prevDemand = currentDemand;
-          }
+          _maybeNotifyDemandChange(currentDemand);
 
-          final routeStatus =
-              _determineRouteStatus(activeDrivers.length, currentDemand);
+          final routeStatus = _determineRouteStatus(
+            activeDrivers.length,
+            currentDemand,
+          );
 
           // Update driver position state and start animations for changed positions
           final activeIds = <String>{};
@@ -869,7 +1022,9 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
           }
 
           // Remove positions for drivers that went offline or left
-          final toRemove = _driverPositions.keys.where((k) => !activeIds.contains(k)).toList();
+          final toRemove = _driverPositions.keys
+              .where((k) => !activeIds.contains(k))
+              .toList();
           for (final k in toRemove) {
             _driverPositions.remove(k);
             _driverMeta.remove(k);
@@ -882,7 +1037,12 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
             body: IndexedStack(
               index: _selectedTabIndex,
               children: [
-                _buildJeepneysTab(drivers, activeDrivers, routeStatus, currentDemand),
+                _buildJeepneysTab(
+                  drivers,
+                  activeDrivers,
+                  routeStatus,
+                  currentDemand,
+                ),
                 _buildMapTab(activeDrivers),
                 _buildNotificationsTab(),
                 _buildProfileTab(),
@@ -947,7 +1107,10 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: statusColor,
                     borderRadius: BorderRadius.circular(20),
@@ -1008,10 +1171,17 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Active Jeepneys', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const Text(
+                  'Active Jeepneys',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
                 Text(
                   '$active',
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green),
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green,
+                  ),
                 ),
               ],
             ),
@@ -1083,10 +1253,7 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
           width: 12,
           height: 12,
           margin: const EdgeInsets.only(top: 4),
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -1113,17 +1280,16 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
   }
 
   // 3. LIVE MAP SECTION
-  Widget _buildMapWidget(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+  Widget _buildMapWidget(
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+  ) {
     final initialCenter = _routePoints.isNotEmpty
         ? _routePoints[_routePoints.length ~/ 2]
         : const LatLng(15.12, 120.625);
 
     return FlutterMap(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: initialCenter,
-        initialZoom: 12,
-      ),
+      options: MapOptions(initialCenter: initialCenter, initialZoom: 12),
       children: [
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -1141,15 +1307,15 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
               ),
             ],
           ),
-        MarkerLayer(
-          markers: _buildDriverMarkersFromState(),
-        ),
+        MarkerLayer(markers: _buildDriverMarkersFromState()),
       ],
     );
   }
 
   // 5. JEEPNEY LIST (AVAILABLE DRIVERS)
-  Widget _buildAvailableDriversList(List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+  Widget _buildAvailableDriversList(
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+  ) {
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -1166,14 +1332,19 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
             if (activeDrivers.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16),
-                child: Text('No jeepneys currently operating.', style: TextStyle(color: Colors.grey)),
+                child: Text(
+                  'No jeepneys currently operating.',
+                  style: TextStyle(color: Colors.grey),
+                ),
               )
             else
               ...activeDrivers.map((doc) {
                 final data = doc.data() ?? {};
-                final fullName = data['fullName'] as String? ?? 'Unknown Driver';
+                final fullName =
+                    data['fullName'] as String? ?? 'Unknown Driver';
                 final plateNumber = data['plateNumber'] as String? ?? 'N/A';
-                final status = (data['status'] as String?)?.toLowerCase() ?? 'offline';
+                final status =
+                    (data['status'] as String?)?.toLowerCase() ?? 'offline';
                 final demand = (data['demand'] as String?) ?? 'LOW';
 
                 return ListTile(
@@ -1185,9 +1356,16 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
                       color: Colors.blue,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.directions_car, color: Colors.white, size: 20),
+                    child: const Icon(
+                      Icons.directions_car,
+                      color: Colors.white,
+                      size: 20,
+                    ),
                   ),
-                  title: Text(fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  title: Text(
+                    fullName,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1203,8 +1381,13 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
                   ),
                   trailing: Chip(
                     label: Text(status),
-                    backgroundColor: status == 'operating' ? Colors.green : Colors.grey,
-                    labelStyle: const TextStyle(color: Colors.white, fontSize: 10),
+                    backgroundColor: status == 'operating'
+                        ? Colors.green
+                        : Colors.grey,
+                    labelStyle: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                    ),
                   ),
                 );
               }),
@@ -1245,7 +1428,10 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
             if (_notifications.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16),
-                child: Text('No notifications yet.', style: TextStyle(color: Colors.grey)),
+                child: Text(
+                  'No notifications yet.',
+                  style: TextStyle(color: Colors.grey),
+                ),
               )
             else
               ...List.generate(
@@ -1274,5 +1460,4 @@ class _CommuterPageState extends State<CommuterPage> with WidgetsBindingObserver
       ),
     );
   }
-
 }

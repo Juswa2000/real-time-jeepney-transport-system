@@ -1,0 +1,29 @@
+1080:                                                     Colors.indigo,
+1081:                                                   ),
+1082:                                                 ),
+1083:                                               ),
+1084:                                               Expanded(
+1085:                                                 child: Padding(
+1086:                                                   padding:
+1087:                                                       const EdgeInsets.symmetric(
+1088:                                                         horizontal: 8.0,
+1089:                                                       ),
+1090:                                                   child: _buildStatCard(
+1091:                                                     'Active Jeepneys',
+1092:                                                     activeDrivers.toString(),
+1093:                                                     'Currently transmitting GPS data',
+1094:                                                     Icons.location_on,
+1095:                                                     Colors.green,
+1096:                                                   ),
+1097:                                                 ),
+1098:                                               ),
+1099:                                               Expanded(
+1100:                                                 child: Padding(
+1101:                                                   padding:
+1102:                                                       const EdgeInsets.symmetric(
+1103:                                                         horizontal: 8.0,
+1104:                                                       ),
+1105:                                                   child: _buildStatCard(
+1106:                                                     'Offline Jeepneys',
+1107:                                                     offlineDrivers.toString(),
+1108:                                                     'Jeepneys with no GPS signal',

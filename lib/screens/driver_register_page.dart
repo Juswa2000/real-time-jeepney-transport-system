@@ -13,7 +13,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
   final _contactController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _licenseController = TextEditingController();
+  final _capacityController = TextEditingController();
   final _plateController = TextEditingController();
   String _selectedRoute = 'ANGELES - SAN FERNANDO';
   bool _isLoading = false;
@@ -24,7 +24,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
     _contactController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
-    _licenseController.dispose();
+    _capacityController.dispose();
     _plateController.dispose();
     super.dispose();
   }
@@ -35,20 +35,23 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
     final contact = _contactController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
-    final license = _licenseController.text.trim();
+    final capacityText = _capacityController.text.trim();
     final plate = _plateController.text.trim();
     final route = _selectedRoute;
+    final capacity = int.tryParse(capacityText);
 
     if (name.isEmpty ||
         contact.isEmpty ||
         email.isEmpty ||
         password.isEmpty ||
-        license.isEmpty ||
+        capacityText.isEmpty ||
+        capacity == null ||
+        capacity <= 0 ||
         plate.isEmpty ||
         _selectedRoute.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('All fields are required for driver registration.'),
+          content: Text('All fields are required and capacity must be a positive number.'),
         ),
       );
       return;
@@ -68,7 +71,7 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
             'driver',
             name,
             contactNumber: contact,
-            licenseNumber: license,
+            availableSeats: capacity,
             plateNumber: plate,
             route: route,
           )
@@ -184,9 +187,10 @@ class _DriverRegisterPageState extends State<DriverRegisterPage> {
                 ),
                 const SizedBox(height: 16),
                 _buildField(
-                  controller: _licenseController,
-                  label: 'License Number',
-                  icon: Icons.card_membership,
+                  controller: _capacityController,
+                  label: 'Jeepney Capacity',
+                  icon: Icons.event_seat,
+                  keyboardType: TextInputType.number,
                 ),
                 const SizedBox(height: 16),
                 _buildField(

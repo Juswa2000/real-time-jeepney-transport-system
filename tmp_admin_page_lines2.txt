@@ -1,0 +1,90 @@
+1250:                                                           ],
+1251:                                                         ),
+1252:                                                       ),
+1253:                                                     ),
+1254:                                                   ],
+1255:                                                 )
+1256:                                               else
+1257:                                                 Center(
+1258:                                                   child: SizedBox(
+1259:                                                     width: double.infinity,
+1260:                                                     height: mapPanelHeight,
+1261:                                                     child: Container(
+1262:                                                       key: _mapKey,
+1263:                                                       child: _buildMapPanel(
+1264:                                                         driverDocs,
+1265:                                                         expand: true,
+1266:                                                       ),
+1267:                                                     ),
+1268:                                                   ),
+1269:                                                 ),
+1270:                                               const SizedBox(height: 20),
+1271:                                               isWide
+1272:                                                   ? Row(
+1273:                                                       crossAxisAlignment:
+1274:                                                           CrossAxisAlignment.start,
+1275:                                                       children: [
+1276:                                                         Expanded(
+1277:                                                           flex: 1,
+1278:                                                           child: Container(
+1279:                                                             key: _driversKey,
+1280:                                                             child: _buildDriverTable(
+1281:                                                               context,
+1282:                                                               driverDocs,
+1283:                                                             ),
+1284:                                                           ),
+1285:                                                         ),
+1286:                                                         const SizedBox(width: 20),
+1287:                                                         Expanded(
+1288:                                                           child: Container(
+1289:                                                             key: _reportsKey,
+1290:                                                             child: _buildReportsPanel(
+1291:                                                               driverDocs,
+1292:                                                               commuterDocs,
+1293:                                                               reportsSnapshot.data,
+1294:                                                             ),
+1295:                                                           ),
+1296:                                                         ),
+1297:                                                       ],
+1298:                                                     )
+1299:                                                   : Column(
+1300:                                                       crossAxisAlignment:
+1301:                                                           CrossAxisAlignment.stretch,
+1302:                                                       children: [
+1303:                                                         Container(
+1304:                                                           key: _driversKey,
+1305:                                                           child: _buildDriverTable(
+1306:                                                             context,
+1307:                                                             driverDocs,
+1308:                                                           ),
+1309:                                                         ),
+1310:                                                         const SizedBox(height: 20),
+1311:                                                         Container(
+1312:                                                           key: _commutersKey,
+1313:                                                           child:
+1314:                                                               _buildCommuterSection(
+1315:                                                             commuterDocs,
+1316:                                                           ),
+1317:                                                         ),
+1318:                                                         const SizedBox(height: 20),
+1319:                                                         Container(
+1320:                                                           key: _notificationsKey,
+1321:                                                           child:
+1322:                                                               _buildNotificationsPanel(
+1323:                                                             generatedAlerts,
+1324:                                                             notificationsSnapshot
+1325:                                                                 .data,
+1326:                                                           ),
+1327:                                                         ),
+1328:                                                         const SizedBox(height: 20),
+1329:                                                         Container(
+1330:                                                           key: _reportsKey,
+1331:                                                           child: _buildReportsPanel(
+1332:                                                             driverDocs,
+1333:                                                             commuterDocs,
+1334:                                                             reportsSnapshot.data,
+1335:                                                           ),
+1336:                                                         ),
+1337:                                                       ],
+1338:                                                     ),
+1339:                                             ],

@@ -1,0 +1,29 @@
+1340:                                           ),
+1341:                                   ),
+1342:                                 ),
+1343:                               ],
+1344:                             ),
+1345:                           ),
+1346:                         );
+1347:                       },
+1348:                     );
+1349:                   },
+1350:                 );
+1351:               },
+1352:             );
+1353:           },
+1354:         );
+1355:       },
+1356:     );
+1357:   }
+1358: 
+1359:   Widget _buildSidebar(BuildContext context) {
+1360:     return Container(
+1361:       decoration: const BoxDecoration(
+1362:         gradient: LinearGradient(
+1363:           colors: [Color(0xFF0B3D91), Color(0xFF003C8F)],
+1364:           begin: Alignment.topCenter,
+1365:           end: Alignment.bottomCenter,
+1366:         ),
+1367:       ),
+1368:       child: SafeArea(
