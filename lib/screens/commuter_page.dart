@@ -69,7 +69,9 @@ class _CommuterPageState extends State<CommuterPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _sharingSubscription?.cancel();
-    for (final t in _animationTimers.values) t.cancel();
+    for (final t in _animationTimers.values) {
+      t.cancel();
+    }
     super.dispose();
   }
 
@@ -332,6 +334,22 @@ class _CommuterPageState extends State<CommuterPage>
     return 'Available';
   }
 
+  String _routeSummary(List<DocumentSnapshot<Map<String, dynamic>>> drivers) {
+    final routeCounts = <String, int>{};
+    for (final doc in drivers) {
+      final data = doc.data() ?? {};
+      final route = (data['route'] as String?)?.trim();
+      if (route == null || route.isEmpty) continue;
+      routeCounts[route] = (routeCounts[route] ?? 0) + 1;
+    }
+    if (routeCounts.isEmpty) return 'No route information available';
+    if (routeCounts.length == 1) return routeCounts.keys.first;
+    final summary = routeCounts.entries
+        .map((entry) => '${entry.key} (${entry.value})')
+        .join(' · ');
+    return summary;
+  }
+
   // Build map markers for each active driver
   // Build markers based on the last-known animated positions
   List<Marker> _buildDriverMarkersFromState() {
@@ -341,8 +359,9 @@ class _CommuterPageState extends State<CommuterPage>
           final pos = entry.value;
           final meta = _driverMeta[id] ?? {};
           final gpsEnabled = (meta['gpsEnabled'] as bool?) ?? true;
-          if (!gpsEnabled || pos.latitude == 0 && pos.longitude == 0)
+          if (!gpsEnabled || pos.latitude == 0 && pos.longitude == 0) {
             return null;
+          }
 
           final plateNumber = meta['plateNumber'] as String? ?? 'Unknown';
           final fullName = meta['fullName'] as String? ?? 'Driver';
@@ -363,8 +382,9 @@ class _CommuterPageState extends State<CommuterPage>
             height: 80,
             child: GestureDetector(
               onTap: () {
+                final routeDirection = meta['route'] as String? ?? 'Unknown route';
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('$fullName ($plateNumber)')),
+                  SnackBar(content: Text('$fullName ($plateNumber) — $routeDirection')),
                 );
               },
               child: Column(
@@ -768,7 +788,7 @@ class _CommuterPageState extends State<CommuterPage>
         children: [
           _buildPassengerShareCard(),
           const SizedBox(height: 16),
-          _buildRouteCard(routeStatus),
+          _buildRouteCard(routeStatus, activeDrivers),
           const SizedBox(height: 16),
           _buildJeepneyStatusCard(activeDrivers.length),
           const SizedBox(height: 16),
@@ -1003,6 +1023,7 @@ class _CommuterPageState extends State<CommuterPage>
               'plateNumber': data['plateNumber'] as String? ?? 'Unknown',
               'fullName': data['fullName'] as String? ?? 'Driver',
               'statusColor': data['statusColor'] as String? ?? 'blue',
+              'route': data['route'] as String? ?? 'Unknown route',
               'gpsEnabled': gpsEnabled,
             };
 
@@ -1078,7 +1099,7 @@ class _CommuterPageState extends State<CommuterPage>
   }
 
   // 1. ROUTE HEADER CARD
-  Widget _buildRouteCard(String status) {
+  Widget _buildRouteCard(String status, List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
     final statusColor = status == 'Available'
         ? Colors.green
         : (status == 'Limited' ? Colors.orange : Colors.red);
@@ -1100,10 +1121,10 @@ class _CommuterPageState extends State<CommuterPage>
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Angeles → San Fernando',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    _routeSummary(activeDrivers),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                 ),
                 Container(
@@ -1343,6 +1364,7 @@ class _CommuterPageState extends State<CommuterPage>
                 final fullName =
                     data['fullName'] as String? ?? 'Unknown Driver';
                 final plateNumber = data['plateNumber'] as String? ?? 'N/A';
+                final route = data['route'] as String? ?? 'Unknown route';
                 final status =
                     (data['status'] as String?)?.toLowerCase() ?? 'offline';
                 final demand = (data['demand'] as String?) ?? 'LOW';
@@ -1370,6 +1392,7 @@ class _CommuterPageState extends State<CommuterPage>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Plate: $plateNumber'),
+                      Text('Route: $route'),
                       Text(
                         'Demand: $demand',
                         style: TextStyle(

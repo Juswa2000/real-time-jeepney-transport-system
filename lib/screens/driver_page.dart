@@ -26,7 +26,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   bool _isProcessing = false;
   final List<String> _notifications = [];
   final MapController _mapController = MapController();
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _commuterLocationSubscription;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _commuterLocationSubscription;
   final Set<String> _sharedCommuterIds = <String>{};
   int _selectedTabIndex = 0;
 
@@ -137,7 +138,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
       // App is going to background/closed
       _setDriverOffline();
     }
-    if (state == AppLifecycleState.detached || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.detached ||
+        state == AppLifecycleState.inactive) {
       // ensure we stop publishing when app is terminated
       _stopPublishing();
     }
@@ -194,41 +196,52 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
   void _listenForSharedCommuterLocations() {
     _commuterLocationSubscription?.cancel();
-    _commuterLocationSubscription = _firestore.collection('commuters').snapshots().listen((snapshot) {
-      for (final change in snapshot.docChanges) {
-        final doc = change.doc;
-        final data = doc.data();
-        if (data == null) {
-          continue;
-        }
+    _commuterLocationSubscription = _firestore
+        .collection('commuters')
+        .snapshots()
+        .listen(
+          (snapshot) {
+            for (final change in snapshot.docChanges) {
+              final doc = change.doc;
+              final data = doc.data();
+              if (data == null) {
+                continue;
+              }
 
-        final isVisible = (data['shareOnDriverMap'] as bool?) ?? false;
-        final lat = data['latitude'];
-        final lon = data['longitude'];
-        final hasCoordinates = lat != null && lon != null;
+              final isVisible = (data['shareOnDriverMap'] as bool?) ?? false;
+              final lat = data['latitude'];
+              final lon = data['longitude'];
+              final hasCoordinates = lat != null && lon != null;
 
-        if (change.type == DocumentChangeType.removed) {
-          _sharedCommuterIds.remove(doc.id);
-          continue;
-        }
+              if (change.type == DocumentChangeType.removed) {
+                _sharedCommuterIds.remove(doc.id);
+                continue;
+              }
 
-        if (isVisible && hasCoordinates) {
-          final wasAlreadyTracked = _sharedCommuterIds.contains(doc.id);
-          if (!wasAlreadyTracked) {
-            _sharedCommuterIds.add(doc.id);
-            final fullName = data['fullName'];
-            final name = (fullName is String ? fullName.trim() : null)?.isNotEmpty == true
-                ? fullName
-                : 'Commuter';
-            _addNotification('$name shared a pickup location on the live map.');
-          }
-        } else {
-          _sharedCommuterIds.remove(doc.id);
-        }
-      }
-    }, onError: (error) {
-      _addNotification('Unable to monitor commuter locations: $error');
-    });
+              if (isVisible && hasCoordinates) {
+                final wasAlreadyTracked = _sharedCommuterIds.contains(doc.id);
+                if (!wasAlreadyTracked) {
+                  _sharedCommuterIds.add(doc.id);
+                  final fullName = data['fullName'];
+                  final name =
+                      (fullName is String ? fullName.trim() : null)
+                              ?.isNotEmpty ==
+                          true
+                      ? fullName
+                      : 'Commuter';
+                  _addNotification(
+                    '$name shared a pickup location on the live map.',
+                  );
+                }
+              } else {
+                _sharedCommuterIds.remove(doc.id);
+              }
+            }
+          },
+          onError: (error) {
+            _addNotification('Unable to monitor commuter locations: $error');
+          },
+        );
   }
 
   void _addNotification(String message) {
@@ -255,6 +268,35 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     }
   }
 
+  String _reverseRoute(String route) {
+    if (!route.contains('→')) return route;
+    final parts = route.split('→').map((part) => part.trim()).toList();
+    if (parts.length != 2) return route;
+    return '${parts[1]} → ${parts[0]}';
+  }
+
+  bool _routeShouldUseReversedPolyline(String route) {
+    final parts = route
+        .split('→')
+        .map((part) => part.trim().toLowerCase())
+        .toList();
+    if (parts.length != 2) return false;
+    return parts.first.contains('san fernando');
+  }
+
+  Future<void> _switchRoute(String currentRoute) async {
+    if (_driverId == null) return;
+    final newRoute = _reverseRoute(currentRoute);
+    try {
+      await _firestore.collection('drivers').doc(_driverId).set({
+        'route': newRoute,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _addNotification('Route switched to $newRoute.');
+    } catch (e) {
+      _addNotification('Failed to switch route: $e');
+    }
+  }
 
   Future<void> _refreshLocation() async {
     if (_driverId == null) return;
@@ -312,34 +354,39 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
       _addNotification('Location permission denied.');
       return;
     }
 
     // Listen to position updates and write to Firestore
     _positionSubscription?.cancel();
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 5, // meters
-      ),
-    ).listen((position) async {
-      try {
-        await _firestore.collection('drivers').doc(_driverId).set({
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-          'gpsEnabled': true,
-          'heading': position.heading,
-          'speed': position.speed,
-          'lastGpsAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      } catch (e) {
-        _addNotification('Failed to publish location: $e');
-      }
-    }, onError: (e) {
-      _addNotification('Location stream error: $e');
-    });
+    _positionSubscription =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 5, // meters
+          ),
+        ).listen(
+          (position) async {
+            try {
+              await _firestore.collection('drivers').doc(_driverId).set({
+                'latitude': position.latitude,
+                'longitude': position.longitude,
+                'gpsEnabled': true,
+                'heading': position.heading,
+                'speed': position.speed,
+                'lastGpsAt': FieldValue.serverTimestamp(),
+              }, SetOptions(merge: true));
+            } catch (e) {
+              _addNotification('Failed to publish location: $e');
+            }
+          },
+          onError: (e) {
+            _addNotification('Location stream error: $e');
+          },
+        );
 
     setState(() => _publishing = true);
     _addNotification('Started publishing location updates.');
@@ -538,7 +585,9 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             ElevatedButton.icon(
               onPressed: _publishing ? _stopPublishing : _startPublishing,
               icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
-              label: Text(_publishing ? 'Stop Live Publish' : 'Start Live Publish'),
+              label: Text(
+                _publishing ? 'Stop Live Publish' : 'Start Live Publish',
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: _publishing ? Colors.red : Colors.green,
               ),
@@ -728,10 +777,27 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     required double latitude,
     required double longitude,
     required bool gpsEnabled,
+    required String route,
   }) {
     final mapCenter = latitude == 0 && longitude == 0
         ? const LatLng(15.13, 120.65)
         : LatLng(latitude, longitude);
+
+    final reversedRoute = _reverseRoute(route);
+    final routePoints = _routeShouldUseReversedPolyline(route)
+        ? _routePolylinePoints.reversed.toList()
+        : _routePolylinePoints;
+
+    // Responsive sizes based on available screen real estate
+    final media = MediaQuery.of(context).size;
+    final isCompact = media.height < 700 || media.width < 420;
+    final cardHeight = isCompact ? 110.0 : 140.0;
+    final mapPadding = isCompact ? 8.0 : 16.0;
+    final initialZoomLevel = isCompact ? 14.0 : 13.0;
+    final polylineWidth = isCompact ? 4.0 : 5.0;
+    final markerOuterSize = isCompact ? 30.0 : 34.0;
+    final markerIconSize = isCompact ? 18.0 : 20.0; // Removed const
+    final markerLabelFont = isCompact ? 8.0 : 9.0; // Removed const
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _firestore.collection('commuters').snapshots(),
@@ -751,7 +817,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
         final markers = visibleCommuters.map((doc) {
           final data = doc.data();
-          final commuterName = (data['fullName'] as String?)?.trim().isNotEmpty == true
+          final commuterName =
+              (data['fullName'] as String?)?.trim().isNotEmpty == true
               ? data['fullName'] as String
               : 'Commuter';
           final commuterLat = (data['latitude'] as num).toDouble();
@@ -759,31 +826,41 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
           return Marker(
             point: LatLng(commuterLat, commuterLon),
-            width: 100,
-            height: 100,
+            width: markerOuterSize + 20,
+            height: markerOuterSize + 24,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 34,
-                  height: 34,
+                  width: markerOuterSize,
+                  height: markerOuterSize,
                   decoration: BoxDecoration(
                     color: Colors.orange,
                     shape: BoxShape.circle,
                     border: Border.all(color: Colors.white, width: 2),
                   ),
-                  child: const Icon(Icons.person_pin_circle, color: Colors.white, size: 20),
+                  child: Icon(
+                    Icons.person_pin_circle,
+                    color: Colors.white,
+                    size: markerIconSize,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
                     commuterName.split(' ').first,
-                    style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: markerLabelFont,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -792,55 +869,119 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         }).toList();
 
         return Padding(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.all(mapPadding),
           child: Column(
+            mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Card(
-                elevation: 6,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Live commuter map',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: visibleCommuters.isEmpty ? Colors.grey : Colors.green,
-                              borderRadius: BorderRadius.circular(999),
+              SizedBox(
+                height: cardHeight,
+                child: Card(
+                  elevation: 6,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.all(mapPadding),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Live commuter map',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                            child: Text(
-                              '${visibleCommuters.length} commuters visible',
-                              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: visibleCommuters.isEmpty
+                                    ? Colors.grey
+                                    : Colors.green,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                '${visibleCommuters.length} commuters visible',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        visibleCommuters.isEmpty
-                            ? 'No commuters are currently sharing their location on the map.'
-                            : 'Visible commuter pickup points are shown in real time on the route map below.',
-                        style: const TextStyle(color: Colors.black54, fontSize: 13),
-                      ),
-                      const SizedBox(height: 12),
-                      ElevatedButton.icon(
-                        onPressed: _publishing ? _stopPublishing : _startPublishing,
-                        icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
-                        label: Text(_publishing ? 'Stop Broadcast' : 'Start Broadcast'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _publishing ? Colors.red : Colors.green,
+                          ],
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          visibleCommuters.isEmpty
+                              ? 'No commuters are currently sharing their location on the map.'
+                              : 'Visible commuter pickup points are shown in real time on the route map below.',
+                          style: const TextStyle(
+                            color: Colors.black54,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: _publishing
+                                    ? _stopPublishing
+                                    : _startPublishing,
+                                icon: Icon(
+                                  _publishing
+                                      ? Icons.pause_circle
+                                      : Icons.play_circle,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  _publishing ? 'Stop' : 'Broadcast',
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _publishing
+                                      ? Colors.red
+                                      : Colors.green,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  minimumSize: const Size(48, 36),
+                                  visualDensity: VisualDensity.compact,
+                                  textStyle: const TextStyle(fontSize: 13),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            ElevatedButton.icon(
+                              onPressed: () => _switchRoute(route),
+                              icon: const Icon(Icons.swap_horiz, size: 18),
+                              label: Text(
+                                'To $reversedRoute',
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.indigo,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                minimumSize: const Size(40, 36),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -852,20 +993,24 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                     mapController: _mapController,
                     options: MapOptions(
                       initialCenter: mapCenter,
-                      initialZoom: 13,
+                      initialZoom: initialZoomLevel,
                     ),
                     children: [
                       TileLayer(
-                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName: 'com.example.jeepjeep',
                       ),
                       PolylineLayer(
                         polylines: [
                           Polyline(
-                            points: _routePolylinePoints,
-                            color: Colors.blue.withOpacity(0.85),
-                            strokeWidth: 5,
-                            borderStrokeWidth: 2,
+                            points: routePoints,
+                            color: Colors.blue.withAlpha(217),
+                            strokeWidth: polylineWidth,
+                            borderStrokeWidth: (polylineWidth / 2).clamp(
+                              1.0,
+                              2.0,
+                            ),
                             borderColor: Colors.white,
                           ),
                         ],
@@ -905,7 +1050,9 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         children: [
           Card(
             elevation: 6,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -935,10 +1082,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   const SizedBox(height: 4),
                   Text(
                     'Driver',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.black54,
-                    ),
+                    style: TextStyle(fontSize: 14, color: Colors.black54),
                   ),
                 ],
               ),
@@ -947,7 +1091,9 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           const SizedBox(height: 24),
           Card(
             elevation: 4,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -1134,63 +1280,55 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
           final gpsEnabled = data['gpsEnabled'] as bool? ?? false;
 
-          return Scaffold(
-            body: IndexedStack(
-              index: _selectedTabIndex,
-              children: [
-                _buildDashboardTab(
-                  fullName,
-                  plateNumber,
-                  route,
-                  statusColor,
-                  statusLabel,
-                  latitude,
-                  longitude,
-                  gpsEnabled,
-                ),
-                _buildLiveMapTab(
-                  latitude: latitude,
-                  longitude: longitude,
-                  gpsEnabled: gpsEnabled,
-                ),
-                _buildNotificationTab(),
-                _buildProfileTab(
-                  fullName,
-                  plateNumber,
-                  route,
-                  statusColor,
-                  statusLabel,
-                  availableSeats,
-                ),
-              ],
-            ),
-            bottomNavigationBar: BottomNavigationBar(
-              currentIndex: _selectedTabIndex,
-              onTap: (index) => setState(() => _selectedTabIndex = index),
-              type: BottomNavigationBarType.fixed,
-              items: const [
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.dashboard),
-                  label: 'Dashboard',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.map),
-                  label: 'Live Map',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.notifications),
-                  label: 'Notification',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.person),
-                  label: 'Profile',
-                ),
-              ],
-            ),
+          return IndexedStack(
+            index: _selectedTabIndex,
+            children: [
+              _buildDashboardTab(
+                fullName,
+                plateNumber,
+                route,
+                statusColor,
+                statusLabel,
+                latitude,
+                longitude,
+                gpsEnabled,
+              ),
+              _buildLiveMapTab(
+                latitude: latitude,
+                longitude: longitude,
+                gpsEnabled: gpsEnabled,
+                route: route,
+              ),
+              _buildNotificationTab(),
+              _buildProfileTab(
+                fullName,
+                plateNumber,
+                route,
+                statusColor,
+                statusLabel,
+                availableSeats,
+              ),
+            ],
           );
         },
       ),
-      
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedTabIndex,
+        onTap: (index) => setState(() => _selectedTabIndex = index),
+        type: BottomNavigationBarType.fixed,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.dashboard),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Live Map'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.notifications),
+            label: 'Notification',
+          ),
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
+        ],
+      ),
     );
   }
 }
