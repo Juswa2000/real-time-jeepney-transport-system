@@ -2,9 +2,19 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regional Realtime Database URL — must match the one in the .ino file
+// ─────────────────────────────────────────────────────────────────────────────
+const String _kDatabaseUrl =
+    'https://jeepneyauth-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+// The device ID the driver claims — must match DEFAULT_DEVICE_ID in the .ino
+const String _kDeviceId = 'esp01';
 
 class DriverPage extends StatefulWidget {
   const DriverPage({super.key});
@@ -14,22 +24,107 @@ class DriverPage extends StatefulWidget {
 }
 
 class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseAuth      _auth      = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _seatController = TextEditingController();
 
-  // Continuous location publishing
+  // Location publishing
   StreamSubscription<Position>? _positionSubscription;
   bool _publishing = false;
 
   String? _driverId;
-  bool _isProcessing = false;
-  final List<String> _notifications = [];
-  final MapController _mapController = MapController();
+  bool    _isProcessing = false;
+
+  final List<String>  _notifications       = [];
+  final MapController _mapController       = MapController();
+  final Set<String>   _sharedCommuterIds   = {};
+
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
-  _commuterLocationSubscription;
-  final Set<String> _sharedCommuterIds = <String>{};
+      _commuterLocationSubscription;
+
   int _selectedTabIndex = 0;
+
+  // ── ESP32 RTDB listener & device claim ────────────────────────────────────
+  StreamSubscription<DatabaseEvent>? _esp32StatusSubscription;
+  bool   _esp32Connected  = false;
+  bool   _deviceClaimed   = false;   // true once we wrote our UID to RTDB
+  String? _lastEsp32Status;
+
+  static const _esp32StatusMap = {
+    'AVAILABLE': (color: 'green',  label: 'Vacant',  seats: 8),
+    'LIMITED':   (color: 'orange', label: 'Limited', seats: 2),
+    'FULL':      (color: 'red',    label: 'Full',    seats: 0),
+  };
+
+  // Writes the driver's UID into RTDB so the ESP32 knows whose Firestore
+  // document to update when a button is pressed.
+  Future<void> _claimDevice() async {
+    if (_driverId == null) return;
+    try {
+      final db  = FirebaseDatabase.instanceFor(
+          app: _auth.app, databaseURL: _kDatabaseUrl);
+      final ref = db.ref('devices/$_kDeviceId/driverUid');
+      await ref.set(_driverId);
+      setState(() => _deviceClaimed = true);
+      _addNotification('ESP32 device claimed by this driver account.');
+    } catch (e) {
+      _addNotification('Failed to claim ESP32 device: $e');
+    }
+  }
+
+  // Clears the UID from RTDB on logout so the ESP32 stops updating this driver.
+  Future<void> _releaseDevice() async {
+    try {
+      final db  = FirebaseDatabase.instanceFor(
+          app: _auth.app, databaseURL: _kDatabaseUrl);
+      final ref = db.ref('devices/$_kDeviceId/driverUid');
+      await ref.remove();
+      setState(() {
+        _deviceClaimed  = false;
+        _esp32Connected = false;
+      });
+    } catch (_) {}
+  }
+
+  // Listens to the ESP32's status node so the app UI reflects button presses
+  // made on the physical device.
+  void _startEsp32Listener() {
+    final db  = FirebaseDatabase.instanceFor(
+        app: _auth.app, databaseURL: _kDatabaseUrl);
+    final ref = db.ref('devices/$_kDeviceId/status');
+
+    _esp32StatusSubscription = ref.onValue.listen(
+      (event) {
+        final raw = event.snapshot.value;
+        if (raw == null) return;
+
+        final status = raw.toString().toUpperCase();
+        if (status == _lastEsp32Status) return;
+        _lastEsp32Status = status;
+
+        if (!_esp32Connected) setState(() => _esp32Connected = true);
+
+        final mapping = _esp32StatusMap[status];
+        if (mapping == null) {
+          _addNotification('ESP32 sent unknown status: $status');
+          return;
+        }
+
+        _addNotification('ESP32 button → ${mapping.label}');
+        _setQuickStatus(mapping.color, mapping.label, mapping.seats);
+      },
+      onError: (e) {
+        if (_esp32Connected) setState(() => _esp32Connected = false);
+        _addNotification('ESP32 listener error: $e');
+      },
+    );
+  }
+
+  void _stopEsp32Listener() {
+    _esp32StatusSubscription?.cancel();
+    _esp32StatusSubscription = null;
+  }
+  // ── END ESP32 ─────────────────────────────────────────────────────────────
 
   final List<LatLng> _routePolylinePoints = const [
     LatLng(15.121953, 120.600196),
@@ -120,6 +215,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     _listenForSharedCommuterLocations();
     _ensureDriverDocExists();
     _addSampleNotifications();
+    // Claim device then start listening
+    _claimDevice().then((_) => _startEsp32Listener());
   }
 
   @override
@@ -128,56 +225,47 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     _positionSubscription?.cancel();
     _commuterLocationSubscription?.cancel();
     _seatController.dispose();
+    _stopEsp32Listener();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused) {
-      // App is going to background/closed
-      _setDriverOffline();
-    }
+    if (state == AppLifecycleState.paused)   _setDriverOffline();
     if (state == AppLifecycleState.detached ||
-        state == AppLifecycleState.inactive) {
-      // ensure we stop publishing when app is terminated
-      _stopPublishing();
-    }
+        state == AppLifecycleState.inactive) _stopPublishing();
   }
 
   Future<void> _setDriverOffline() async {
     if (_driverId == null) return;
     try {
-      await _firestore.collection('drivers').doc(_driverId).set({
-        'gpsEnabled': false,
-        'lastOfflineAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      // Notify silently without setState as the widget might be unmounted
-    } catch (e) {
-      // Silently ignore errors when app is closing
-    }
+      await _firestore.collection('drivers').doc(_driverId).set(
+        {'gpsEnabled': false, 'lastOfflineAt': FieldValue.serverTimestamp()},
+        SetOptions(merge: true),
+      );
+    } catch (_) {}
   }
 
   Future<void> _ensureDriverDocExists() async {
     if (_driverId == null) return;
-
     try {
       final docRef = _firestore.collection('drivers').doc(_driverId);
       final snapshot = await docRef.get();
       if (!snapshot.exists) {
         await docRef.set({
-          'fullName': _auth.currentUser?.displayName ?? 'Jeepney Driver',
-          'plateNumber': 'N/A',
-          'route': 'Angeles → San Fernando',
+          'fullName':       _auth.currentUser?.displayName ?? 'Jeepney Driver',
+          'plateNumber':    'N/A',
+          'route':          'Angeles → San Fernando',
           'availableSeats': 10,
-          'statusColor': 'green',
-          'statusLabel': 'Vacant',
-          'latitude': 15.13,
-          'longitude': 120.65,
-          'gpsEnabled': false,
-          'createdAt': FieldValue.serverTimestamp(),
+          'statusColor':    'green',
+          'statusLabel':    'Vacant',
+          'latitude':       15.13,
+          'longitude':      120.65,
+          'gpsEnabled':     false,
+          'createdAt':      FieldValue.serverTimestamp(),
         });
-        _addNotification('Driver profile created in Firestore.');
+        _addNotification('Driver profile created.');
       }
     } catch (e) {
       _addNotification('Error initializing driver data: $e');
@@ -199,99 +287,71 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     _commuterLocationSubscription = _firestore
         .collection('commuters')
         .snapshots()
-        .listen(
-          (snapshot) {
-            for (final change in snapshot.docChanges) {
-              final doc = change.doc;
-              final data = doc.data();
-              if (data == null) {
-                continue;
-              }
+        .listen((snapshot) {
+      for (final change in snapshot.docChanges) {
+        final doc  = change.doc;
+        final data = doc.data();
+        if (data == null) continue;
 
-              final isVisible = (data['shareOnDriverMap'] as bool?) ?? false;
-              final lat = data['latitude'];
-              final lon = data['longitude'];
-              final hasCoordinates = lat != null && lon != null;
+        final isVisible     = (data['shareOnDriverMap'] as bool?) ?? false;
+        final hasCoords     = data['latitude'] != null && data['longitude'] != null;
 
-              if (change.type == DocumentChangeType.removed) {
-                _sharedCommuterIds.remove(doc.id);
-                continue;
-              }
-
-              if (isVisible && hasCoordinates) {
-                final wasAlreadyTracked = _sharedCommuterIds.contains(doc.id);
-                if (!wasAlreadyTracked) {
-                  _sharedCommuterIds.add(doc.id);
-                  final fullName = data['fullName'];
-                  final name =
-                      (fullName is String ? fullName.trim() : null)
-                              ?.isNotEmpty ==
-                          true
-                      ? fullName
-                      : 'Commuter';
-                  _addNotification(
-                    '$name shared a pickup location on the live map.',
-                  );
-                }
-              } else {
-                _sharedCommuterIds.remove(doc.id);
-              }
-            }
-          },
-          onError: (error) {
-            _addNotification('Unable to monitor commuter locations: $error');
-          },
-        );
+        if (change.type == DocumentChangeType.removed) {
+          _sharedCommuterIds.remove(doc.id);
+          continue;
+        }
+        if (isVisible && hasCoords) {
+          if (!_sharedCommuterIds.contains(doc.id)) {
+            _sharedCommuterIds.add(doc.id);
+            final name = (data['fullName'] as String?)?.trim().isNotEmpty == true
+                ? data['fullName'] as String
+                : 'Commuter';
+            _addNotification('$name shared a pickup location on the live map.');
+          }
+        } else {
+          _sharedCommuterIds.remove(doc.id);
+        }
+      }
+    }, onError: (e) => _addNotification('Unable to monitor commuters: $e'));
   }
 
   void _addNotification(String message) {
     if (!mounted) return;
     setState(() {
-      final timestamp = DateTime.now().toLocal().toString().split('.').first;
-      _notifications.insert(0, '[$timestamp] $message');
-      if (_notifications.length > 12) {
-        _notifications.removeRange(12, _notifications.length);
-      }
+      final ts = DateTime.now().toLocal().toString().split('.').first;
+      _notifications.insert(0, '[$ts] $message');
+      if (_notifications.length > 12) _notifications.removeRange(12, _notifications.length);
     });
   }
 
-  Color _getColorFromString(String colorString) {
-    switch (colorString.toLowerCase()) {
-      case 'green':
-        return Colors.green;
-      case 'orange':
-        return Colors.orange;
-      case 'red':
-        return Colors.red;
-      default:
-        return Colors.grey;
+  Color _getColorFromString(String c) {
+    switch (c.toLowerCase()) {
+      case 'green':  return Colors.green;
+      case 'orange': return Colors.orange;
+      case 'red':    return Colors.red;
+      default:       return Colors.grey;
     }
   }
 
   String _reverseRoute(String route) {
     if (!route.contains('→')) return route;
-    final parts = route.split('→').map((part) => part.trim()).toList();
-    if (parts.length != 2) return route;
-    return '${parts[1]} → ${parts[0]}';
+    final p = route.split('→').map((s) => s.trim()).toList();
+    return p.length == 2 ? '${p[1]} → ${p[0]}' : route;
   }
 
   bool _routeShouldUseReversedPolyline(String route) {
-    final parts = route
-        .split('→')
-        .map((part) => part.trim().toLowerCase())
-        .toList();
-    if (parts.length != 2) return false;
-    return parts.first.contains('san fernando');
+    final p = route.split('→').map((s) => s.trim().toLowerCase()).toList();
+    return p.length == 2 && p.first.contains('san fernando');
   }
 
   Future<void> _switchRoute(String currentRoute) async {
     if (_driverId == null) return;
     final newRoute = _reverseRoute(currentRoute);
     try {
-      await _firestore.collection('drivers').doc(_driverId).set({
-        'route': newRoute,
-        'lastUpdated': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await _firestore.collection('drivers').doc(_driverId).set(
+        {'route': newRoute, 'lastUpdated': FieldValue.serverTimestamp()},
+        SetOptions(merge: true),
+      );
       _addNotification('Route switched to $newRoute.');
     } catch (e) {
       _addNotification('Failed to switch route: $e');
@@ -300,41 +360,29 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
   Future<void> _refreshLocation() async {
     if (_driverId == null) return;
-
     try {
       setState(() => _isProcessing = true);
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        _addNotification('Location services are disabled.');
-        return;
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        _addNotification('Location services are disabled.'); return;
       }
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied)
+        perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        _addNotification('Location permission denied.'); return;
       }
-      if (permission == LocationPermission.denied) {
-        _addNotification('Location permission denied.');
-        return;
-      }
-      if (permission == LocationPermission.deniedForever) {
-        _addNotification('Location permission permanently denied.');
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+      final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
       await _firestore.collection('drivers').doc(_driverId).set({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
+        'latitude':  pos.latitude,
+        'longitude': pos.longitude,
         'gpsEnabled': true,
         'lastGpsAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-
-      _addNotification(
-        'GPS refreshed: ${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}.',
-      );
+      _addNotification('GPS refreshed: '
+          '${pos.latitude.toStringAsFixed(5)}, '
+          '${pos.longitude.toStringAsFixed(5)}.');
     } catch (e) {
       _addNotification('GPS update failed: $e');
     } finally {
@@ -344,50 +392,34 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
   Future<void> _startPublishing() async {
     if (_driverId == null) return;
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      _addNotification('Location services disabled.');
-      return;
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      _addNotification('Location services disabled.'); return;
     }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied)
+      perm = await Geolocator.requestPermission();
+    if (perm == LocationPermission.denied ||
+        perm == LocationPermission.deniedForever) {
+      _addNotification('Location permission denied.'); return;
     }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      _addNotification('Location permission denied.');
-      return;
-    }
-
-    // Listen to position updates and write to Firestore
     _positionSubscription?.cancel();
-    _positionSubscription =
-        Geolocator.getPositionStream(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.best,
-            distanceFilter: 5, // meters
-          ),
-        ).listen(
-          (position) async {
-            try {
-              await _firestore.collection('drivers').doc(_driverId).set({
-                'latitude': position.latitude,
-                'longitude': position.longitude,
-                'gpsEnabled': true,
-                'heading': position.heading,
-                'speed': position.speed,
-                'lastGpsAt': FieldValue.serverTimestamp(),
-              }, SetOptions(merge: true));
-            } catch (e) {
-              _addNotification('Failed to publish location: $e');
-            }
-          },
-          onError: (e) {
-            _addNotification('Location stream error: $e');
-          },
-        );
-
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best, distanceFilter: 5),
+    ).listen((pos) async {
+      try {
+        await _firestore.collection('drivers').doc(_driverId).set({
+          'latitude':  pos.latitude,
+          'longitude': pos.longitude,
+          'gpsEnabled': true,
+          'heading':   pos.heading,
+          'speed':     pos.speed,
+          'lastGpsAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (e) {
+        _addNotification('Failed to publish location: $e');
+      }
+    }, onError: (e) => _addNotification('Location stream error: $e'));
     setState(() => _publishing = true);
     _addNotification('Started publishing location updates.');
   }
@@ -396,10 +428,10 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     _positionSubscription?.cancel();
     _positionSubscription = null;
     if (_driverId != null) {
-      await _firestore.collection('drivers').doc(_driverId).set({
-        'gpsEnabled': false,
-        'lastOfflineAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await _firestore.collection('drivers').doc(_driverId).set(
+        {'gpsEnabled': false, 'lastOfflineAt': FieldValue.serverTimestamp()},
+        SetOptions(merge: true),
+      );
     }
     setState(() => _publishing = false);
     _addNotification('Stopped publishing location updates.');
@@ -408,9 +440,11 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   Future<void> _logout() async {
     try {
       await _stopPublishing();
+      await _releaseDevice();   // ← clears driverUid from RTDB
+      _stopEsp32Listener();
       await _auth.signOut();
       if (mounted) {
-        Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
+        Navigator.pushNamedAndRemoveUntil(context, '/login', (r) => false);
       }
     } catch (e) {
       _addNotification('Logout failed: $e');
@@ -418,18 +452,15 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   }
 
   Future<void> _setQuickStatus(
-    String statusColor,
-    String statusLabel,
-    int seats,
-  ) async {
+      String statusColor, String statusLabel, int seats) async {
     if (_driverId == null) return;
     try {
       setState(() => _isProcessing = true);
       await _firestore.collection('drivers').doc(_driverId).set({
-        'statusColor': statusColor,
-        'statusLabel': statusLabel,
+        'statusColor':    statusColor,
+        'statusLabel':    statusLabel,
         'availableSeats': seats,
-        'lastUpdated': FieldValue.serverTimestamp(),
+        'lastUpdated':    FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       _addNotification('Status set to $statusLabel');
     } catch (e) {
@@ -439,13 +470,10 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     }
   }
 
-  Widget _buildDriverInfoCard(
-    String fullName,
-    String plateNumber,
-    String route,
-    String statusColor,
-    String statusLabel,
-  ) {
+  // ── Widgets ───────────────────────────────────────────────────────────────
+
+  Widget _buildDriverInfoCard(String fullName, String plateNumber,
+      String route, String statusColor, String statusLabel) {
     final color = _getColorFromString(statusColor);
     return Card(
       elevation: 6,
@@ -462,58 +490,85 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        fullName,
-                        style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                      Text(fullName,
+                          style: const TextStyle(
+                              fontSize: 22, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
-                      Text(
-                        'Plate Number: $plateNumber',
-                        style: const TextStyle(color: Colors.black87),
-                      ),
+                      Text('Plate Number: $plateNumber',
+                          style: const TextStyle(color: Colors.black87)),
                       const SizedBox(height: 4),
-                      Text(
-                        'Route: $route',
-                        style: const TextStyle(color: Colors.black87),
-                      ),
+                      Text('Route: $route',
+                          style: const TextStyle(color: Colors.black87)),
                     ],
                   ),
                 ),
                 Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
+                      horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
-                    color: color,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                      color: color,
+                      borderRadius: BorderRadius.circular(12)),
                   child: Column(
                     children: [
                       Icon(
                         statusColor == 'green'
                             ? Icons.check_circle
                             : statusColor == 'orange'
-                            ? Icons.warning
-                            : Icons.cancel,
+                                ? Icons.warning
+                                : Icons.cancel,
                         color: Colors.white,
                         size: 28,
                       ),
                       const SizedBox(height: 6),
-                      Text(
-                        statusLabel,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                      Text(statusLabel,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            // ESP32 connection status indicator
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.indigo.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: Colors.indigo.withValues(alpha: 0.2)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      // Green = claimed + receiving events; amber = claimed but
+                      // no event yet; grey = not claimed
+                      color: _esp32Connected
+                          ? Colors.green
+                          : _deviceClaimed
+                              ? Colors.amber
+                              : Colors.grey,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _esp32Connected
+                        ? 'ESP32 active — physical buttons enabled'
+                        : _deviceClaimed
+                            ? 'ESP32 claimed — waiting for device…'
+                            : 'ESP32 not claimed',
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.indigo),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -521,7 +576,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildGpsCard(double latitude, double longitude, bool gpsEnabled) {
+  Widget _buildGpsCard(
+      double latitude, double longitude, bool gpsEnabled) {
     return Card(
       elevation: 6,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -530,46 +586,36 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Live GPS Location',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            const Text('Live GPS Location',
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: BorderRadius.circular(8),
-              ),
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8)),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Latitude: ${latitude.toStringAsFixed(5)}',
-                    style: const TextStyle(fontFamily: 'monospace'),
-                  ),
+                  Text('Latitude: ${latitude.toStringAsFixed(5)}',
+                      style: const TextStyle(fontFamily: 'monospace')),
                   const SizedBox(height: 4),
-                  Text(
-                    'Longitude: ${longitude.toStringAsFixed(5)}',
-                    style: const TextStyle(fontFamily: 'monospace'),
-                  ),
+                  Text('Longitude: ${longitude.toStringAsFixed(5)}',
+                      style: const TextStyle(fontFamily: 'monospace')),
                   const SizedBox(height: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
+                        horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: gpsEnabled ? Colors.green : Colors.grey,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
+                        color: gpsEnabled ? Colors.green : Colors.grey,
+                        borderRadius: BorderRadius.circular(4)),
                     child: Text(
                       gpsEnabled ? '✓ GPS Enabled' : '✗ GPS Disabled',
                       style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -583,14 +629,17 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 8),
             ElevatedButton.icon(
-              onPressed: _publishing ? _stopPublishing : _startPublishing,
-              icon: Icon(_publishing ? Icons.pause_circle : Icons.play_circle),
-              label: Text(
-                _publishing ? 'Stop Live Publish' : 'Start Live Publish',
-              ),
+              onPressed:
+                  _publishing ? _stopPublishing : _startPublishing,
+              icon: Icon(_publishing
+                  ? Icons.pause_circle
+                  : Icons.play_circle),
+              label: Text(_publishing
+                  ? 'Stop Live Publish'
+                  : 'Start Live Publish'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: _publishing ? Colors.red : Colors.green,
-              ),
+                  backgroundColor:
+                      _publishing ? Colors.red : Colors.green),
             ),
           ],
         ),
@@ -610,10 +659,9 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Notifications',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                const Text('Notifications',
+                    style: TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold)),
                 IconButton(
                   icon: const Icon(Icons.clear_all),
                   tooltip: 'Clear notifications',
@@ -627,38 +675,28 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             if (_notifications.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  'No notifications yet.',
-                  style: TextStyle(color: Colors.black54),
-                ),
+                child: Text('No notifications yet.',
+                    style: TextStyle(color: Colors.black54)),
               )
             else
               SizedBox(
                 height: 180,
                 child: ListView.builder(
                   itemCount: _notifications.length,
-                  itemBuilder: (context, index) {
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(
-                            Icons.notifications,
-                            color: Colors.blue,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _notifications[index],
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+                  itemBuilder: (ctx, i) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.notifications,
+                            color: Colors.blue, size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: Text(_notifications[i],
+                                style: const TextStyle(fontSize: 13))),
+                      ],
+                    ),
+                  ),
                 ),
               ),
           ],
@@ -676,15 +714,12 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Quick Status Set',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            const Text('Quick Status Set',
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            const Text(
-              'Quickly set jeepney status:',
-              style: TextStyle(fontSize: 13, color: Colors.black54),
-            ),
+            const Text('Quickly set jeepney status:',
+                style: TextStyle(fontSize: 13, color: Colors.black54)),
             const SizedBox(height: 12),
             Row(
               children: [
@@ -696,8 +731,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                     icon: const Icon(Icons.check_circle),
                     label: const Text('🟢 Vacant'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                    ),
+                        backgroundColor: Colors.green),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -705,12 +739,12 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   child: ElevatedButton.icon(
                     onPressed: _isProcessing
                         ? null
-                        : () => _setQuickStatus('orange', 'Limited', 2),
+                        : () =>
+                            _setQuickStatus('orange', 'Limited', 2),
                     icon: const Icon(Icons.warning),
                     label: const Text('🟠 Limited'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.orange,
-                    ),
+                        backgroundColor: Colors.orange),
                   ),
                 ),
               ],
@@ -722,7 +756,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   : () => _setQuickStatus('red', 'Full', 0),
               icon: const Icon(Icons.cancel),
               label: const Text('🔴 Full'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red),
             ),
             const SizedBox(height: 12),
             Container(
@@ -732,7 +767,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Text(
-                'Green: Many seats (8) | Orange: Few seats (2) | Red: Full (0)',
+                'Green: Many seats (8) | Orange: Few seats (2) | Red: Full (0)\n'
+                'Physical ESP32 buttons also update this automatically.',
                 style: TextStyle(fontSize: 12, color: Colors.black87),
               ),
             ),
@@ -743,27 +779,16 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   }
 
   Widget _buildDashboardTab(
-    String fullName,
-    String plateNumber,
-    String route,
-    String statusColor,
-    String statusLabel,
-    double latitude,
-    double longitude,
-    bool gpsEnabled,
-  ) {
+      String fullName, String plateNumber, String route,
+      String statusColor, String statusLabel,
+      double latitude, double longitude, bool gpsEnabled) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildDriverInfoCard(
-            fullName,
-            plateNumber,
-            route,
-            statusColor,
-            statusLabel,
-          ),
+              fullName, plateNumber, route, statusColor, statusLabel),
           const SizedBox(height: 16),
           _buildStatusQuickSelectCard(),
           const SizedBox(height: 16),
@@ -779,89 +804,73 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     required bool gpsEnabled,
     required String route,
   }) {
-    final mapCenter = latitude == 0 && longitude == 0
+    final mapCenter = (latitude == 0 && longitude == 0)
         ? const LatLng(15.13, 120.65)
         : LatLng(latitude, longitude);
-
     final reversedRoute = _reverseRoute(route);
     final routePoints = _routeShouldUseReversedPolyline(route)
         ? _routePolylinePoints.reversed.toList()
         : _routePolylinePoints;
 
-    // Responsive sizes based on available screen real estate
-    final media = MediaQuery.of(context).size;
-    final isCompact = media.height < 700 || media.width < 420;
+    final media      = MediaQuery.of(context).size;
+    final isCompact  = media.height < 700 || media.width < 420;
     final cardHeight = isCompact ? 110.0 : 140.0;
-    final mapPadding = isCompact ? 8.0 : 16.0;
-    final initialZoomLevel = isCompact ? 14.0 : 13.0;
-    final polylineWidth = isCompact ? 4.0 : 5.0;
-    final markerOuterSize = isCompact ? 30.0 : 34.0;
-    final markerIconSize = isCompact ? 18.0 : 20.0; // Removed const
-    final markerLabelFont = isCompact ? 8.0 : 9.0; // Removed const
+    final mapPadding = isCompact ? 8.0   : 16.0;
+    final zoom       = isCompact ? 14.0  : 13.0;
+    final polyW      = isCompact ? 4.0   : 5.0;
+    final mOuter     = isCompact ? 30.0  : 34.0;
+    final mIcon      = isCompact ? 18.0  : 20.0;
+    final mLabel     = isCompact ? 8.0   : 9.0;
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _firestore.collection('commuters').snapshots(),
-      builder: (context, snapshot) {
-        final commuterDocs = snapshot.data?.docs ?? [];
-        final visibleCommuters = commuterDocs.where((doc) {
-          final data = doc.data();
-          final shareOnMap = (data['shareOnDriverMap'] as bool?) ?? false;
-          final commuterGpsEnabled = (data['gpsEnabled'] as bool?) ?? false;
-          final commuterLatitude = data['latitude'];
-          final commuterLongitude = data['longitude'];
-          return shareOnMap &&
-              commuterGpsEnabled &&
-              commuterLatitude != null &&
-              commuterLongitude != null;
+      builder: (ctx, snapshot) {
+        final docs = snapshot.data?.docs ?? [];
+        final visible = docs.where((d) {
+          final data = d.data();
+          return (data['shareOnDriverMap'] as bool? ?? false) &&
+              (data['gpsEnabled'] as bool? ?? false) &&
+              data['latitude'] != null &&
+              data['longitude'] != null;
         }).toList();
 
-        final markers = visibleCommuters.map((doc) {
-          final data = doc.data();
-          final commuterName =
+        final markers = visible.map((d) {
+          final data = d.data();
+          final name =
               (data['fullName'] as String?)?.trim().isNotEmpty == true
-              ? data['fullName'] as String
-              : 'Commuter';
-          final commuterLat = (data['latitude'] as num).toDouble();
-          final commuterLon = (data['longitude'] as num).toDouble();
-
+                  ? data['fullName'] as String
+                  : 'Commuter';
+          final lat = (data['latitude'] as num).toDouble();
+          final lon = (data['longitude'] as num).toDouble();
           return Marker(
-            point: LatLng(commuterLat, commuterLon),
-            width: markerOuterSize + 20,
-            height: markerOuterSize + 24,
+            point: LatLng(lat, lon),
+            width: mOuter + 20,
+            height: mOuter + 24,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: markerOuterSize,
-                  height: markerOuterSize,
+                  width: mOuter,
+                  height: mOuter,
                   decoration: BoxDecoration(
-                    color: Colors.orange,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: Icon(
-                    Icons.person_pin_circle,
-                    color: Colors.white,
-                    size: markerIconSize,
-                  ),
+                      color: Colors.orange,
+                      shape: BoxShape.circle,
+                      border:
+                          Border.all(color: Colors.white, width: 2)),
+                  child: Icon(Icons.person_pin_circle,
+                      color: Colors.white, size: mIcon),
                 ),
                 const SizedBox(height: 4),
                 Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
+                      horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    commuterName.split(' ').first,
-                    style: TextStyle(
-                      fontSize: markerLabelFont,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(999)),
+                  child: Text(name.split(' ').first,
+                      style: TextStyle(
+                          fontSize: mLabel,
+                          fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -879,54 +888,46 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                 child: Card(
                   elevation: 6,
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
+                      borderRadius: BorderRadius.circular(16)),
                   child: Padding(
                     padding: EdgeInsets.all(mapPadding),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          mainAxisAlignment:
+                              MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text(
-                              'Live commuter map',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                            const Text('Live commuter map',
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold)),
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
+                                  horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
-                                color: visibleCommuters.isEmpty
-                                    ? Colors.grey
-                                    : Colors.green,
-                                borderRadius: BorderRadius.circular(999),
-                              ),
+                                  color: visible.isEmpty
+                                      ? Colors.grey
+                                      : Colors.green,
+                                  borderRadius:
+                                      BorderRadius.circular(999)),
                               child: Text(
-                                '${visibleCommuters.length} commuters visible',
+                                '${visible.length} commuters visible',
                                 style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold),
                               ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          visibleCommuters.isEmpty
-                              ? 'No commuters are currently sharing their location on the map.'
-                              : 'Visible commuter pickup points are shown in real time on the route map below.',
+                          visible.isEmpty
+                              ? 'No commuters are currently sharing their location.'
+                              : 'Visible commuter pickup points shown in real time.',
                           style: const TextStyle(
-                            color: Colors.black54,
-                            fontSize: 13,
-                          ),
+                              color: Colors.black54, fontSize: 13),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -937,43 +938,37 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                                     ? _stopPublishing
                                     : _startPublishing,
                                 icon: Icon(
-                                  _publishing
-                                      ? Icons.pause_circle
-                                      : Icons.play_circle,
-                                  size: 18,
-                                ),
+                                    _publishing
+                                        ? Icons.pause_circle
+                                        : Icons.play_circle,
+                                    size: 18),
                                 label: Text(
-                                  _publishing ? 'Stop' : 'Broadcast',
-                                  style: const TextStyle(fontSize: 13),
-                                ),
+                                    _publishing ? 'Stop' : 'Broadcast',
+                                    style:
+                                        const TextStyle(fontSize: 13)),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: _publishing
                                       ? Colors.red
                                       : Colors.green,
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 8,
-                                  ),
+                                      horizontal: 12, vertical: 8),
                                   minimumSize: const Size(48, 36),
                                   visualDensity: VisualDensity.compact,
-                                  textStyle: const TextStyle(fontSize: 13),
                                 ),
                               ),
                             ),
                             const SizedBox(width: 8),
                             ElevatedButton.icon(
                               onPressed: () => _switchRoute(route),
-                              icon: const Icon(Icons.swap_horiz, size: 18),
-                              label: Text(
-                                'To $reversedRoute',
-                                style: const TextStyle(fontSize: 13),
-                              ),
+                              icon: const Icon(Icons.swap_horiz,
+                                  size: 18),
+                              label: Text('To $reversedRoute',
+                                  style:
+                                      const TextStyle(fontSize: 13)),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.indigo,
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 8,
-                                ),
+                                    horizontal: 10, vertical: 8),
                                 minimumSize: const Size(40, 36),
                                 visualDensity: VisualDensity.compact,
                               ),
@@ -992,29 +987,24 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   child: FlutterMap(
                     mapController: _mapController,
                     options: MapOptions(
-                      initialCenter: mapCenter,
-                      initialZoom: initialZoomLevel,
-                    ),
+                        initialCenter: mapCenter,
+                        initialZoom: zoom),
                     children: [
                       TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.example.jeepjeep',
-                      ),
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: routePoints,
-                            color: Colors.blue.withAlpha(217),
-                            strokeWidth: polylineWidth,
-                            borderStrokeWidth: (polylineWidth / 2).clamp(
-                              1.0,
-                              2.0,
-                            ),
-                            borderColor: Colors.white,
-                          ),
-                        ],
-                      ),
+                          urlTemplate:
+                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName:
+                              'com.example.jeepjeep'),
+                      PolylineLayer(polylines: [
+                        Polyline(
+                          points: routePoints,
+                          color: Colors.blue.withAlpha(217),
+                          strokeWidth: polyW,
+                          borderStrokeWidth:
+                              (polyW / 2).clamp(1.0, 2.0),
+                          borderColor: Colors.white,
+                        ),
+                      ]),
                       MarkerLayer(markers: markers),
                     ],
                   ),
@@ -1035,13 +1025,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   }
 
   Widget _buildProfileTab(
-    String fullName,
-    String plateNumber,
-    String route,
-    String statusColor,
-    String statusLabel,
-    int availableSeats,
-  ) {
+      String fullName, String plateNumber, String route,
+      String statusColor, String statusLabel, int availableSeats) {
     final color = _getColorFromString(statusColor);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -1051,8 +1036,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           Card(
             elevation: 6,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
+                borderRadius: BorderRadius.circular(16)),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -1062,28 +1046,19 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.blue[300],
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 48,
-                      color: Colors.white,
-                    ),
+                        shape: BoxShape.circle,
+                        color: Colors.blue[300]),
+                    child: const Icon(Icons.person,
+                        size: 48, color: Colors.white),
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    fullName,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  Text(fullName,
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
-                  Text(
-                    'Driver',
-                    style: TextStyle(fontSize: 14, color: Colors.black54),
-                  ),
+                  const Text('Driver',
+                      style: TextStyle(
+                          fontSize: 14, color: Colors.black54)),
                 ],
               ),
             ),
@@ -1092,87 +1067,38 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           Card(
             elevation: 4,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+                borderRadius: BorderRadius.circular(12)),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Jeepney Information',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
+                  const Text('Jeepney Information',
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Plate Number:',
-                        style: TextStyle(color: Colors.black54),
-                      ),
-                      Text(
-                        plateNumber,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
+                  _infoRow('Plate Number:', plateNumber),
+                  const SizedBox(height: 12),
+                  _infoRow('Route:', route, rightFlex: true),
+                  const SizedBox(height: 12),
+                  _infoRow('Available Seats:', '$availableSeats'),
                   const SizedBox(height: 12),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        'Route:',
-                        style: TextStyle(color: Colors.black54),
-                      ),
-                      Expanded(
-                        child: Text(
-                          route,
-                          textAlign: TextAlign.right,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Available Seats:',
-                        style: TextStyle(color: Colors.black54),
-                      ),
-                      Text(
-                        '$availableSeats',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Status:',
-                        style: TextStyle(color: Colors.black54),
-                      ),
+                      const Text('Status:',
+                          style: TextStyle(color: Colors.black54)),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
+                            horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
-                          color: color,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          statusLabel,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
+                            color: color,
+                            borderRadius: BorderRadius.circular(8)),
+                        child: Text(statusLabel,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12)),
                       ),
                     ],
                   ),
@@ -1186,12 +1112,28 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             icon: const Icon(Icons.logout),
             label: const Text('Logout'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
+                backgroundColor: Colors.red,
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12)),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _infoRow(String label, String value, {bool rightFlex = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.black54)),
+        rightFlex
+            ? Expanded(
+                child: Text(value,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontWeight: FontWeight.bold)))
+            : Text(value,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+      ],
     );
   }
 
@@ -1210,14 +1152,12 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text('Please log in to access the driver dashboard.'),
+                const Text(
+                    'Please log in to access the driver dashboard.'),
                 const SizedBox(height: 16),
                 ElevatedButton(
                   onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                    context,
-                    '/login',
-                    (route) => false,
-                  ),
+                      context, '/login', (_) => false),
                   child: const Text('Go to Login'),
                 ),
               ],
@@ -1235,20 +1175,19 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         leading: const SizedBox.shrink(),
         title: const Text('Driver Dashboard'),
         actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
+          IconButton(
+              icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: docRef.snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+        builder: (ctx, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting)
             return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
+          if (snapshot.hasError)
             return Center(
-              child: Text('Error loading driver data: ${snapshot.error}'),
-            );
-          }
+                child: Text(
+                    'Error loading driver data: ${snapshot.error}'));
 
           final data = snapshot.data?.data();
           if (data == null || !snapshot.data!.exists) {
@@ -1261,72 +1200,64 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                     const Text('Driver record is not available yet.'),
                     const SizedBox(height: 16),
                     ElevatedButton(
-                      onPressed: _ensureDriverDocExists,
-                      child: const Text('Initialize Data'),
-                    ),
+                        onPressed: _ensureDriverDocExists,
+                        child: const Text('Initialize Data')),
                   ],
                 ),
               ),
             );
           }
 
-          final fullName = data['fullName'] as String? ?? 'Jeepney Driver';
-          final plateNumber = data['plateNumber'] as String? ?? 'N/A';
-          final route = data['route'] as String? ?? 'Angeles → San Fernando';
-          final availableSeats = (data['availableSeats'] as num?)?.toInt() ?? 0;
-          final statusColor = data['statusColor'] as String? ?? 'green';
-          final statusLabel = data['statusLabel'] as String? ?? 'Vacant';
-          final latitude = (data['latitude'] as num?)?.toDouble() ?? 0.0;
-          final longitude = (data['longitude'] as num?)?.toDouble() ?? 0.0;
-          final gpsEnabled = data['gpsEnabled'] as bool? ?? false;
+          final fullName =
+              data['fullName'] as String? ?? 'Jeepney Driver';
+          final plateNumber =
+              data['plateNumber'] as String? ?? 'N/A';
+          final route =
+              data['route'] as String? ?? 'Angeles → San Fernando';
+          final availableSeats =
+              (data['availableSeats'] as num?)?.toInt() ?? 0;
+          final statusColor =
+              data['statusColor'] as String? ?? 'green';
+          final statusLabel =
+              data['statusLabel'] as String? ?? 'Vacant';
+          final latitude =
+              (data['latitude'] as num?)?.toDouble() ?? 0.0;
+          final longitude =
+              (data['longitude'] as num?)?.toDouble() ?? 0.0;
+          final gpsEnabled =
+              data['gpsEnabled'] as bool? ?? false;
 
           return IndexedStack(
             index: _selectedTabIndex,
             children: [
-              _buildDashboardTab(
-                fullName,
-                plateNumber,
-                route,
-                statusColor,
-                statusLabel,
-                latitude,
-                longitude,
-                gpsEnabled,
-              ),
+              _buildDashboardTab(fullName, plateNumber, route,
+                  statusColor, statusLabel, latitude, longitude,
+                  gpsEnabled),
               _buildLiveMapTab(
-                latitude: latitude,
-                longitude: longitude,
-                gpsEnabled: gpsEnabled,
-                route: route,
-              ),
+                  latitude: latitude,
+                  longitude: longitude,
+                  gpsEnabled: gpsEnabled,
+                  route: route),
               _buildNotificationTab(),
-              _buildProfileTab(
-                fullName,
-                plateNumber,
-                route,
-                statusColor,
-                statusLabel,
-                availableSeats,
-              ),
+              _buildProfileTab(fullName, plateNumber, route,
+                  statusColor, statusLabel, availableSeats),
             ],
           );
         },
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedTabIndex,
-        onTap: (index) => setState(() => _selectedTabIndex = index),
+        onTap: (i) => setState(() => _selectedTabIndex = i),
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard),
-            label: 'Dashboard',
-          ),
-          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Live Map'),
+              icon: Icon(Icons.dashboard), label: 'Dashboard'),
           BottomNavigationBarItem(
-            icon: Icon(Icons.notifications),
-            label: 'Notification',
-          ),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
+              icon: Icon(Icons.map), label: 'Live Map'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.notifications), label: 'Notification'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.person), label: 'Profile'),
         ],
       ),
     );

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geolocator/geolocator.dart';
@@ -152,10 +153,62 @@ class _CommuterPageState extends State<CommuterPage>
       }, SetOptions(merge: true));
       if (mounted) setState(() => _demandRequested = true);
       _addNotification('Ride requested. Drivers will see your request.');
+      
+      // Send notification to all drivers AND trigger buzzer
+      await _notifyDriversAndActivateBuzzer();
     } catch (e) {
       _addNotification('Failed to request ride: $e');
     } finally {
       if (mounted) setState(() => _demandInProgress = false);
+    }
+  }
+
+  Future<void> _notifyDriversAndActivateBuzzer() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      // Get commuter info for notification
+      final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+      final commuterData = commuterDoc.data() ?? {};
+      final commuterName = (commuterData['name'] as String?) ?? 'A commuter';
+
+      // 1. Send push notification to all drivers
+      final driversSnapshot = await _firestore.collection('drivers').get();
+      for (var driverDoc in driversSnapshot.docs) {
+        final driverId = driverDoc.id;
+        await _firestore.collection('drivers').doc(driverId).collection('notifications').add({
+          'type': 'ride_request',
+          'message': '$commuterName requested a ride',
+          'commuterName': commuterName,
+          'commuterId': user.uid,
+          'timestamp': FieldValue.serverTimestamp(),
+          'read': false,
+        });
+      }
+      
+      print('[DEBUG] Notifications sent to all drivers');
+
+      // 2. Trigger ESP32 buzzer for 5 seconds
+      await _triggerBuzzer();
+    } catch (e) {
+      print('[DEBUG] Failed to notify drivers: $e');
+    }
+  }
+
+  Future<void> _triggerBuzzer() async {
+    try {
+      // Write buzz command to Firebase RTDB under ESP32 device
+      // Path: /devices/esp01/buzzer
+      final dbRef = FirebaseDatabase.instance.ref('devices/esp01/buzzer');
+      await dbRef.set({
+        'action': 'buzz',
+        'duration': 5000, // 5 seconds in milliseconds
+        'triggeredAt': DateTime.now().toIso8601String(),
+      });
+      print('[DEBUG] Buzzer command sent to ESP32');
+    } catch (e) {
+      print('[DEBUG] Failed to trigger buzzer: $e');
     }
   }
 
