@@ -232,9 +232,13 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.paused)   _setDriverOffline();
+    if (state == AppLifecycleState.paused) {
+      _setDriverOffline();
+    }
     if (state == AppLifecycleState.detached ||
-        state == AppLifecycleState.inactive) _stopPublishing();
+        state == AppLifecycleState.inactive) {
+      _stopPublishing();
+    }
   }
 
   Future<void> _setDriverOffline() async {
@@ -334,14 +338,18 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   }
 
   String _reverseRoute(String route) {
-    if (!route.contains('→')) return route;
-    final p = route.split('→').map((s) => s.trim()).toList();
-    return p.length == 2 ? '${p[1]} → ${p[0]}' : route;
+    final separator = RegExp(r'\s*(?:→|[-–—])\s*');
+    if (!separator.hasMatch(route)) return route;
+    final parts = route.split(separator).map((part) => part.trim()).toList();
+    if (parts.length != 2) return route;
+    return '${parts[1]} → ${parts[0]}';
   }
 
   bool _routeShouldUseReversedPolyline(String route) {
-    final p = route.split('→').map((s) => s.trim().toLowerCase()).toList();
-    return p.length == 2 && p.first.contains('san fernando');
+    final separator = RegExp(r'\s*(?:→|[-–—])\s*');
+    final parts = route.split(separator).map((part) => part.trim().toLowerCase()).toList();
+    if (parts.length != 2) return false;
+    return parts.first.contains('san fernando');
   }
 
   Future<void> _switchRoute(String currentRoute) async {
@@ -366,11 +374,13 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         _addNotification('Location services are disabled.'); return;
       }
       var perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied)
+      if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
+      }
       if (perm == LocationPermission.denied ||
           perm == LocationPermission.deniedForever) {
-        _addNotification('Location permission denied.'); return;
+        _addNotification('Location permission denied.');
+        return;
       }
       final pos = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high);
@@ -396,11 +406,13 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
       _addNotification('Location services disabled.'); return;
     }
     var perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied)
+    if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
+    }
     if (perm == LocationPermission.denied ||
         perm == LocationPermission.deniedForever) {
-      _addNotification('Location permission denied.'); return;
+      _addNotification('Location permission denied.');
+      return;
     }
     _positionSubscription?.cancel();
     _positionSubscription = Geolocator.getPositionStream(
@@ -705,7 +717,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildStatusQuickSelectCard() {
+  Widget _buildStatusQuickSelectCard(int totalCapacity) {
     return Card(
       elevation: 6,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -727,7 +739,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   child: ElevatedButton.icon(
                     onPressed: _isProcessing
                         ? null
-                        : () => _setQuickStatus('green', 'Vacant', 8),
+                        : () => _setQuickStatus('green', 'Vacant', totalCapacity),
                     icon: const Icon(Icons.check_circle),
                     label: const Text('🟢 Vacant'),
                     style: ElevatedButton.styleFrom(
@@ -766,10 +778,10 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                 color: Colors.amber.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Text(
-                'Green: Many seats (8) | Orange: Few seats (2) | Red: Full (0)\n'
+              child: Text(
+                'Green: Many seats ($totalCapacity) | Orange: Few seats (2) | Red: Full (0)\n'
                 'Physical ESP32 buttons also update this automatically.',
-                style: TextStyle(fontSize: 12, color: Colors.black87),
+                style: const TextStyle(fontSize: 12, color: Colors.black87),
               ),
             ),
           ],
@@ -781,7 +793,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   Widget _buildDashboardTab(
       String fullName, String plateNumber, String route,
       String statusColor, String statusLabel,
-      double latitude, double longitude, bool gpsEnabled) {
+      double latitude, double longitude, bool gpsEnabled,
+      int totalCapacity) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -790,7 +803,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           _buildDriverInfoCard(
               fullName, plateNumber, route, statusColor, statusLabel),
           const SizedBox(height: 16),
-          _buildStatusQuickSelectCard(),
+          _buildStatusQuickSelectCard(totalCapacity),
           const SizedBox(height: 16),
           _buildGpsCard(latitude, longitude, gpsEnabled),
         ],
@@ -812,15 +825,16 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         ? _routePolylinePoints.reversed.toList()
         : _routePolylinePoints;
 
-    final media      = MediaQuery.of(context).size;
-    final isCompact  = media.height < 700 || media.width < 420;
-    final cardHeight = isCompact ? 110.0 : 140.0;
-    final mapPadding = isCompact ? 8.0   : 16.0;
-    final zoom       = isCompact ? 14.0  : 13.0;
-    final polyW      = isCompact ? 4.0   : 5.0;
-    final mOuter     = isCompact ? 30.0  : 34.0;
-    final mIcon      = isCompact ? 18.0  : 20.0;
-    final mLabel     = isCompact ? 8.0   : 9.0;
+    // Responsive sizes based on available screen real estate
+    final media = MediaQuery.of(context).size;
+    final isCompact = media.height < 700 || media.width < 420;
+    final cardHeight = isCompact ? 150.0 : 180.0;
+    final mapPadding = isCompact ? 8.0 : 16.0;
+    final initialZoomLevel = isCompact ? 14.0 : 13.0;
+    final polylineWidth = isCompact ? 4.0 : 5.0;
+    final markerOuterSize = isCompact ? 30.0 : 34.0;
+    final markerIconSize = isCompact ? 18.0 : 20.0;
+    final markerLabelFont = isCompact ? 8.0 : 9.0;
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _firestore.collection('commuters').snapshots(),
@@ -844,33 +858,42 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           final lon = (data['longitude'] as num).toDouble();
           return Marker(
             point: LatLng(lat, lon),
-            width: mOuter + 20,
-            height: mOuter + 24,
+            width: markerOuterSize + 20,
+            height: markerOuterSize + 24,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: mOuter,
-                  height: mOuter,
+                  width: markerOuterSize,
+                  height: markerOuterSize,
                   decoration: BoxDecoration(
-                      color: Colors.orange,
-                      shape: BoxShape.circle,
-                      border:
-                          Border.all(color: Colors.white, width: 2)),
-                  child: Icon(Icons.person_pin_circle,
-                      color: Colors.white, size: mIcon),
+                    color: Colors.orange,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: Icon(
+                    Icons.person_pin_circle,
+                    color: Colors.white,
+                    size: markerIconSize,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Container(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 2),
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(999)),
-                  child: Text(name.split(' ').first,
-                      style: TextStyle(
-                          fontSize: mLabel,
-                          fontWeight: FontWeight.bold)),
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    name.split(' ').first,
+                    style: TextStyle(
+                      fontSize: markerLabelFont,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -930,50 +953,28 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                               color: Colors.black54, fontSize: 13),
                         ),
                         const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: _publishing
-                                    ? _stopPublishing
-                                    : _startPublishing,
-                                icon: Icon(
-                                    _publishing
-                                        ? Icons.pause_circle
-                                        : Icons.play_circle,
-                                    size: 18),
-                                label: Text(
-                                    _publishing ? 'Stop' : 'Broadcast',
-                                    style:
-                                        const TextStyle(fontSize: 13)),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _publishing
-                                      ? Colors.red
-                                      : Colors.green,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 8),
-                                  minimumSize: const Size(48, 36),
-                                  visualDensity: VisualDensity.compact,
-                                ),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: ElevatedButton.icon(
+                            onPressed: () => _switchRoute(route),
+                            icon: const Icon(Icons.swap_horiz, size: 18),
+                            label: Text(
+                              'To $reversedRoute',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Colors.white,
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            ElevatedButton.icon(
-                              onPressed: () => _switchRoute(route),
-                              icon: const Icon(Icons.swap_horiz,
-                                  size: 18),
-                              label: Text('To $reversedRoute',
-                                  style:
-                                      const TextStyle(fontSize: 13)),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.indigo,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 8),
-                                minimumSize: const Size(40, 36),
-                                visualDensity: VisualDensity.compact,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.indigo,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
                               ),
+                              minimumSize: const Size(40, 36),
+                              visualDensity: VisualDensity.compact,
                             ),
-                          ],
+                          ),
                         ),
                       ],
                     ),
@@ -987,24 +988,28 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                   child: FlutterMap(
                     mapController: _mapController,
                     options: MapOptions(
-                        initialCenter: mapCenter,
-                        initialZoom: zoom),
+                      initialCenter: mapCenter,
+                      initialZoom: initialZoomLevel,
+                    ),
                     children: [
                       TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName:
-                              'com.example.jeepjeep'),
-                      PolylineLayer(polylines: [
-                        Polyline(
-                          points: routePoints,
-                          color: Colors.blue.withAlpha(217),
-                          strokeWidth: polyW,
-                          borderStrokeWidth:
-                              (polyW / 2).clamp(1.0, 2.0),
-                          borderColor: Colors.white,
-                        ),
-                      ]),
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.example.jeepjeep',
+                      ),
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: routePoints,
+                            color: Colors.blue.withAlpha(217),
+                            strokeWidth: polylineWidth,
+                            borderStrokeWidth: (polylineWidth / 2).clamp(
+                              1.0,
+                              2.0,
+                            ),
+                            borderColor: Colors.white,
+                          ),
+                        ],
+                      ),
                       MarkerLayer(markers: markers),
                     ],
                   ),
@@ -1182,12 +1187,14 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: docRef.snapshots(),
         builder: (ctx, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting)
+          if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
-          if (snapshot.hasError)
+          }
+          if (snapshot.hasError) {
             return Center(
-                child: Text(
-                    'Error loading driver data: ${snapshot.error}'));
+              child: Text('Error loading driver data: ${snapshot.error}'),
+            );
+          }
 
           final data = snapshot.data?.data();
           if (data == null || !snapshot.data!.exists) {
@@ -1216,6 +1223,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
               data['route'] as String? ?? 'Angeles → San Fernando';
           final availableSeats =
               (data['availableSeats'] as num?)?.toInt() ?? 0;
+          final totalCapacity =
+              (data['totalCapacity'] as num?)?.toInt() ?? availableSeats;
           final statusColor =
               data['statusColor'] as String? ?? 'green';
           final statusLabel =
@@ -1232,7 +1241,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
             children: [
               _buildDashboardTab(fullName, plateNumber, route,
                   statusColor, statusLabel, latitude, longitude,
-                  gpsEnabled),
+                  gpsEnabled, totalCapacity),
               _buildLiveMapTab(
                   latitude: latitude,
                   longitude: longitude,

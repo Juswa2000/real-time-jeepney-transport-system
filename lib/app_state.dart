@@ -238,6 +238,7 @@ class AppState extends ChangeNotifier {
             'plateNumber': plateNumber ?? '',
             'route': route ?? '',
             'availableSeats': availableSeats ?? 10,
+            'totalCapacity': availableSeats ?? 10,
             'statusColor': 'green',
             'statusLabel': 'Vacant',
             'latitude': 15.13,
