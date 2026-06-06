@@ -7,6 +7,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:jeepjeep/utils/geo.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -47,6 +48,8 @@ class _CommuterPageState extends State<CommuterPage>
   String _prevDemand = 'LOW';
   int _selectedTabIndex = 0;
   String? _registeredName;
+
+  Position? _currentCommuterPosition;
 
   static const _openRouteServiceApiKey = 'YOUR_OPENROUTESERVICE_API_KEY';
   static const _routeStart = LatLng(15.1455, 120.5979);
@@ -151,13 +154,19 @@ class _CommuterPageState extends State<CommuterPage>
         'demand': 'HIGH',
         'demandRequestedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-      if (mounted) setState(() => _demandRequested = true);
+      if (mounted) {
+        setState(() {
+          _demandRequested = true;
+          _demandInProgress = false;
+        });
+      }
       _addNotification('Ride requested. Drivers will see your request.');
-      
-      // Send notification to all drivers AND trigger buzzer
-      await _notifyDriversAndActivateBuzzer();
+
+      // Send notification to all drivers AND trigger buzzer in background.
+      unawaited(_notifyDriversAndActivateBuzzer());
     } catch (e) {
       _addNotification('Failed to request ride: $e');
+      if (mounted) setState(() => _demandInProgress = false);
     } finally {
       if (mounted) setState(() => _demandInProgress = false);
     }
@@ -169,7 +178,10 @@ class _CommuterPageState extends State<CommuterPage>
       if (user == null) return;
 
       // Get commuter info for notification
-      final commuterDoc = await _firestore.collection('commuters').doc(user.uid).get();
+      final commuterDoc = await _firestore
+          .collection('commuters')
+          .doc(user.uid)
+          .get();
       final commuterData = commuterDoc.data() ?? {};
       final commuterName = (commuterData['name'] as String?) ?? 'A commuter';
 
@@ -177,16 +189,20 @@ class _CommuterPageState extends State<CommuterPage>
       final driversSnapshot = await _firestore.collection('drivers').get();
       for (var driverDoc in driversSnapshot.docs) {
         final driverId = driverDoc.id;
-        await _firestore.collection('drivers').doc(driverId).collection('notifications').add({
-          'type': 'ride_request',
-          'message': '$commuterName requested a ride',
-          'commuterName': commuterName,
-          'commuterId': user.uid,
-          'timestamp': FieldValue.serverTimestamp(),
-          'read': false,
-        });
+        await _firestore
+            .collection('drivers')
+            .doc(driverId)
+            .collection('notifications')
+            .add({
+              'type': 'ride_request',
+              'message': '$commuterName requested a ride',
+              'commuterName': commuterName,
+              'commuterId': user.uid,
+              'timestamp': FieldValue.serverTimestamp(),
+              'read': false,
+            });
       }
-      
+
       print('[DEBUG] Notifications sent to all drivers');
 
       // 2. Trigger ESP32 buzzer for 5 seconds
@@ -228,6 +244,27 @@ class _CommuterPageState extends State<CommuterPage>
       _addNotification('Ride request cancelled.');
     } catch (e) {
       _addNotification('Failed to cancel request: $e');
+    } finally {
+      if (mounted) setState(() => _demandInProgress = false);
+    }
+  }
+
+  Future<void> _confirmBoarding() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    if (_demandInProgress) return;
+
+    setState(() => _demandInProgress = true);
+    try {
+      final commuterDoc = _firestore.collection('commuters').doc(user.uid);
+      await commuterDoc.set({
+        'demand': 'LOW',
+        'boardedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) setState(() => _demandRequested = false);
+      _addNotification('Ride request removed. Have a safe trip aboard!');
+    } catch (e) {
+      _addNotification('Failed to confirm boarding: $e');
     } finally {
       if (mounted) setState(() => _demandInProgress = false);
     }
@@ -276,6 +313,9 @@ class _CommuterPageState extends State<CommuterPage>
         desiredAccuracy: LocationAccuracy.high,
       );
 
+      setState(() {
+        _currentCommuterPosition = position;
+      });
       await commuterDoc.set({
         'shareOnDriverMap': true,
         'gpsEnabled': true,
@@ -294,6 +334,9 @@ class _CommuterPageState extends State<CommuterPage>
           ).listen(
             (position) async {
               try {
+                setState(() {
+                  _currentCommuterPosition = position;
+                });
                 await commuterDoc.set({
                   'shareOnDriverMap': true,
                   'gpsEnabled': true,
@@ -435,9 +478,12 @@ class _CommuterPageState extends State<CommuterPage>
             height: 80,
             child: GestureDetector(
               onTap: () {
-                final routeDirection = meta['route'] as String? ?? 'Unknown route';
+                final routeDirection =
+                    meta['route'] as String? ?? 'Unknown route';
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('$fullName ($plateNumber) — $routeDirection')),
+                  SnackBar(
+                    content: Text('$fullName ($plateNumber) — $routeDirection'),
+                  ),
                 );
               },
               child: Column(
@@ -817,11 +863,83 @@ class _CommuterPageState extends State<CommuterPage>
             ),
             if (_demandRequested) ...[
               const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _demandInProgress ? null : _confirmBoarding,
+                  icon: const Icon(Icons.check),
+                  label: const Text('Confirm Boarding'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
               Text(
-                'Ride requested — drivers notified.',
+                'Tap Confirm Boarding only when you have boarded the jeepney. The request will be removed.',
                 style: TextStyle(color: Colors.black54),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  int _countNearbyDrivers(
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+  ) {
+    final position = _currentCommuterPosition;
+    if (position == null) return 0;
+
+    return activeDrivers.where((doc) {
+      final data = doc.data();
+      if (data == null) return false;
+      final lat = (data['latitude'] as num?)?.toDouble();
+      final lon = (data['longitude'] as num?)?.toDouble();
+      if (lat == null || lon == null) return false;
+      return isWithinRadius(
+        position.latitude,
+        position.longitude,
+        lat,
+        lon,
+        500,
+      );
+    }).length;
+  }
+
+  Widget _buildNearbyDriversCard(int nearbyCount) {
+    final label = nearbyCount > 0
+        ? '$nearbyCount driver${nearbyCount == 1 ? '' : 's'} are within 500m of your location.'
+        : 'No drivers are within 500m of your current position.';
+    final subtitle = _currentCommuterPosition == null
+        ? 'Share your location to detect nearby jeepneys.'
+        : 'This uses your phone GPS only.';
+
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Nearby Jeepneys',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.black87, fontSize: 14),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: const TextStyle(color: Colors.black54, fontSize: 13),
+            ),
           ],
         ),
       ),
@@ -842,6 +960,8 @@ class _CommuterPageState extends State<CommuterPage>
           _buildPassengerShareCard(),
           const SizedBox(height: 16),
           _buildRouteCard(routeStatus, activeDrivers),
+          const SizedBox(height: 16),
+          _buildNearbyDriversCard(_countNearbyDrivers(activeDrivers)),
           const SizedBox(height: 16),
           _buildJeepneyStatusCard(activeDrivers.length),
           const SizedBox(height: 16),
@@ -1152,7 +1272,10 @@ class _CommuterPageState extends State<CommuterPage>
   }
 
   // 1. ROUTE HEADER CARD
-  Widget _buildRouteCard(String status, List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers) {
+  Widget _buildRouteCard(
+    String status,
+    List<DocumentSnapshot<Map<String, dynamic>>> activeDrivers,
+  ) {
     final statusColor = status == 'Available'
         ? Colors.green
         : (status == 'Limited' ? Colors.orange : Colors.red);
@@ -1177,7 +1300,10 @@ class _CommuterPageState extends State<CommuterPage>
                 Expanded(
                   child: Text(
                     _routeSummary(activeDrivers),
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 Container(
@@ -1211,12 +1337,7 @@ class _CommuterPageState extends State<CommuterPage>
                 'Route error: $_routeError',
                 style: const TextStyle(color: Colors.redAccent),
               )
-            else if (_usingFallbackRoute)
-              const Text(
-                'Using fallback route preview until an OpenRouteService API key is configured.',
-                style: TextStyle(color: Colors.black54),
-              )
-            else
+            else if (!_usingFallbackRoute)
               const Text(
                 'Road-snapped route loaded along MacArthur Highway.',
                 style: TextStyle(color: Colors.black54),

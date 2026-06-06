@@ -163,7 +163,7 @@ class _AdminPageState extends State<AdminPage> {
               width: 56,
               height: 56,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
+                color: color.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Icon(icon, color: color, size: 28),
@@ -220,7 +220,7 @@ class _AdminPageState extends State<AdminPage> {
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 18,
             offset: const Offset(0, 8),
           ),
@@ -235,7 +235,7 @@ class _AdminPageState extends State<AdminPage> {
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.15),
+                  color: color.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, color: color, size: 20),
@@ -275,7 +275,7 @@ class _AdminPageState extends State<AdminPage> {
             width: 42,
             height: 42,
             decoration: BoxDecoration(
-              color: Colors.redAccent.withOpacity(0.12),
+              color: Colors.redAccent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Icon(
@@ -366,8 +366,9 @@ class _AdminPageState extends State<AdminPage> {
                 getTitlesWidget: (value, meta) {
                   const labels = ['High', 'Med', 'Low'];
                   final idx = value.toInt();
-                  if (idx < 0 || idx >= labels.length)
+                  if (idx < 0 || idx >= labels.length) {
                     return const SizedBox.shrink();
+                  }
                   return SideTitleWidget(
                     meta: meta,
                     space: 6,
@@ -681,7 +682,7 @@ class _AdminPageState extends State<AdminPage> {
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: statusColor.withOpacity(0.12),
+                              color: statusColor.withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(18),
                               border: Border.all(color: statusColor, width: 1),
                             ),
@@ -716,8 +717,8 @@ class _AdminPageState extends State<AdminPage> {
                             ),
                             decoration: BoxDecoration(
                               color: gpsEnabled
-                                  ? Colors.green.withOpacity(0.12)
-                                  : Colors.redAccent.withOpacity(0.12),
+                                  ? Colors.green.withValues(alpha: 0.12)
+                                  : Colors.redAccent.withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(18),
                               border: Border.all(
                                 color: gpsEnabled
@@ -859,7 +860,7 @@ class _AdminPageState extends State<AdminPage> {
             itemCount: visibleAlerts.length,
             itemBuilder: (context, index) =>
                 _buildNotificationRow(visibleAlerts[index]),
-            separatorBuilder: (_, __) => const SizedBox(height: 6),
+            separatorBuilder: (_, _) => const SizedBox(height: 6),
           );
 
     return Card(
@@ -1025,12 +1026,14 @@ class _AdminPageState extends State<AdminPage> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _driversStream,
       builder: (context, driversSnapshot) {
-        if (driversSnapshot.hasError)
+        if (driversSnapshot.hasError) {
           return Center(
             child: Text('Driver stream error: ${driversSnapshot.error}'),
           );
-        if (driversSnapshot.connectionState == ConnectionState.waiting)
+        }
+        if (driversSnapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
+        }
 
         final driverDocs = driversSnapshot.data?.docs ?? [];
         final totalDrivers = driverDocs.length;
@@ -1048,21 +1051,24 @@ class _AdminPageState extends State<AdminPage> {
               (data['statusLabel'] as String?)?.toLowerCase() ?? '';
 
           if (!gpsEnabled) generatedAlerts.add('$fullName GPS disabled.');
-          if (statusLabel == 'offline' || statusLabel == 'off duty')
+          if (statusLabel == 'offline' || statusLabel == 'off duty') {
             generatedAlerts.add('$fullName is offline.');
+          }
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: _commutersStream,
           builder: (context, commutersSnapshot) {
-            if (commutersSnapshot.hasError)
+            if (commutersSnapshot.hasError) {
               return Center(
                 child: Text(
                   'Commuter stream error: ${commutersSnapshot.error}',
                 ),
               );
-            if (commutersSnapshot.connectionState == ConnectionState.waiting)
+            }
+            if (commutersSnapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
+            }
 
             final commuterDocs = commutersSnapshot.data?.docs ?? [];
             final activeCommuters = commuterDocs.where((doc) {
@@ -1074,30 +1080,33 @@ class _AdminPageState extends State<AdminPage> {
             final demandHigh = commuterDocs
                 .where((doc) => (doc.data()['demand'] as String?) == 'HIGH')
                 .length;
-            if (demandHigh > 5)
+            if (demandHigh > 5) {
               generatedAlerts.add(
                 'Passenger demand is high: $demandHigh commuters waiting.',
               );
+            }
 
             return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _notificationsStream,
               builder: (context, notificationsSnapshot) {
-                if (notificationsSnapshot.hasError)
+                if (notificationsSnapshot.hasError) {
                   return Center(
                     child: Text(
                       'Notification stream error: ${notificationsSnapshot.error}',
                     ),
                   );
+                }
 
                 return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                   stream: _reportsStream,
                   builder: (context, reportsSnapshot) {
-                    if (reportsSnapshot.hasError)
+                    if (reportsSnapshot.hasError) {
                       return Center(
                         child: Text(
                           'Reports stream error: ${reportsSnapshot.error}',
                         ),
                       );
+                    }
 
                     return LayoutBuilder(
                       builder: (context, constraints) {
@@ -1855,7 +1864,7 @@ class _AdminPageState extends State<AdminPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
         decoration: BoxDecoration(
-          color: selected ? Colors.white.withOpacity(0.12) : Colors.transparent,
+          color: selected ? Colors.white.withValues(alpha: 0.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
