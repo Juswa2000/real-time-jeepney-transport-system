@@ -42,6 +42,8 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
   double? _currentDriverLongitude;
   int _commutersWithin500m = 0;
   final Set<String> _nearbyCommuterIds = {};
+  final Set<String> _approachedCommuterIds = {};
+  double _detectionRadiusMeters = 500.0;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _latestCommuterDocs = [];
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
@@ -277,9 +279,18 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           'latitude': 15.13,
           'longitude': 120.65,
           'gpsEnabled': false,
+          'detectionRadiusMeters': _detectionRadiusMeters,
           'createdAt': FieldValue.serverTimestamp(),
         });
         _addNotification('Driver profile created.');
+      } else {
+        final data = snapshot.data();
+        if (data != null) {
+          final r = (data['detectionRadiusMeters'] as num?)?.toDouble();
+          if (r != null) {
+            setState(() => _detectionRadiusMeters = r);
+          }
+        }
       }
     } catch (e) {
       _addNotification('Error initializing driver data: $e');
@@ -372,7 +383,7 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
       final lat = (data['latitude'] as num).toDouble();
       final lon = (data['longitude'] as num).toDouble();
-      if (isWithinRadius(currentLat, currentLon, lat, lon, 500)) {
+      if (isWithinRadius(currentLat, currentLon, lat, lon, _detectionRadiusMeters)) {
         newNearby.add(doc.id);
       }
     }
@@ -384,6 +395,13 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
           ? data['fullName'] as String
           : 'A commuter';
       _addNotification('$name is within 500m of your jeepney.');
+
+      // If this commuter has an active ride request, attempt to claim it.
+      final demand = (data['demand'] as String?) ?? 'LOW';
+      if (demand == 'HIGH' && !_approachedCommuterIds.contains(id)) {
+        _approachedCommuterIds.add(id);
+        unawaited(_attemptAssignCommuter(id));
+      }
     }
 
     if (!mounted) return;
@@ -576,6 +594,42 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Attempt to atomically assign a commuter to this driver when approaching.
+  /// Uses a transaction to avoid race conditions with other drivers.
+  Future<void> _attemptAssignCommuter(String commuterId) async {
+    if (_driverId == null) return;
+    final ref = _firestore.collection('commuters').doc(commuterId);
+    try {
+      final success = await _firestore.runTransaction<bool>((tx) async {
+        final snapshot = await tx.get(ref);
+        final data = snapshot.data();
+        if (data == null) return false;
+        final demand = (data['demand'] as String?) ?? 'LOW';
+        final assigned = data['assignedDriver'] as String?;
+        if (demand != 'HIGH' || assigned != null) return false;
+        tx.update(ref, {
+          'assignedDriver': _driverId,
+          'assignedAt': FieldValue.serverTimestamp(),
+        });
+        return true;
+      });
+
+      if (success) {
+        _addNotification('You were assigned to a nearby commuter.');
+        // Optionally, notify commuter document and create a driver-side record
+        await _firestore.collection('drivers').doc(_driverId).collection('assignments').add({
+          'commuterId': commuterId,
+          'assignedAt': FieldValue.serverTimestamp(),
+        });
+      } else {
+        // Not assigned (either already assigned or demand dropped)
+        _addNotification('Nearby commuter request already claimed or cancelled.');
+      }
+    } catch (e) {
+      _addNotification('Failed to claim commuter: $e');
+    }
+  }
+
   // ── Widgets ───────────────────────────────────────────────────────────────
 
   Widget _buildDriverInfoCard(
@@ -726,6 +780,45 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
                     style: const TextStyle(fontFamily: 'monospace'),
                   ),
                   const SizedBox(height: 4),
+                  const Text(
+                    'Proximity Detection Radius',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Slider.adaptive(
+                          value: _detectionRadiusMeters,
+                          min: 100,
+                          max: 2000,
+                          divisions: 38,
+                          label: '${_detectionRadiusMeters.toInt()} m',
+                          onChanged: (v) async {
+                            setState(() => _detectionRadiusMeters = v);
+                            if (_driverId != null) {
+                              try {
+                                await _firestore.collection('drivers').doc(_driverId).set({
+                                  'detectionRadiusMeters': v,
+                                  'lastUpdated': FieldValue.serverTimestamp(),
+                                }, SetOptions(merge: true));
+                              } catch (_) {}
+                            }
+                            _updateNearbyCommuters();
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 84,
+                        child: Text(
+                          '${_detectionRadiusMeters.toInt()} m',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
                   Text(
                     'Longitude: ${longitude.toStringAsFixed(5)}',
                     style: const TextStyle(fontFamily: 'monospace'),
@@ -1040,7 +1133,12 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
         }).toList();
 
         return Padding(
-          padding: EdgeInsets.all(mapPadding),
+          padding: EdgeInsets.fromLTRB(
+            mapPadding,
+            mapPadding,
+            mapPadding,
+            mapPadding + 12,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1375,7 +1473,6 @@ class _DriverPageState extends State<DriverPage> with WidgetsBindingObserver {
 
 class _DriverProfileTab extends StatefulWidget {
   const _DriverProfileTab({
-    super.key,
     required this.fullName,
     required this.plateNumber,
     required this.route,

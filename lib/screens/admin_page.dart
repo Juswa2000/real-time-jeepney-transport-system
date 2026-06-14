@@ -652,6 +652,7 @@ class _AdminPageState extends State<AdminPage> {
                     DataColumn(label: Text('Route')),
                     DataColumn(label: Text('Status')),
                     DataColumn(label: Text('GPS Status')),
+                    DataColumn(label: Text('Passengers')),
                     DataColumn(label: Text('Last Updated')),
                   ],
                   rows: visibleDrivers.map((doc) {
@@ -667,6 +668,16 @@ class _AdminPageState extends State<AdminPage> {
                         : statusLower == 'full'
                         ? Colors.red
                         : Colors.grey;
+                    final availableSeats =
+                        (data['availableSeats'] as num?)?.toInt() ?? 0;
+                    final totalCapacity =
+                        (data['totalCapacity'] as num?)?.toInt() ?? 0;
+                    final passengersOnboard = totalCapacity > 0
+                        ? (totalCapacity - availableSeats).clamp(
+                            0,
+                            totalCapacity,
+                          )
+                        : 0;
 
                     return DataRow(
                       cells: [
@@ -751,6 +762,17 @@ class _AdminPageState extends State<AdminPage> {
                                   ),
                                 ),
                               ],
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          Text(
+                            totalCapacity > 0
+                                ? '$passengersOnboard/$totalCapacity'
+                                : 'N/A',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
                             ),
                           ),
                         ),
@@ -1864,7 +1886,9 @@ class _AdminPageState extends State<AdminPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
         decoration: BoxDecoration(
-          color: selected ? Colors.white.withValues(alpha: 0.12) : Colors.transparent,
+          color: selected
+              ? Colors.white.withValues(alpha: 0.12)
+              : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(

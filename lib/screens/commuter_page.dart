@@ -249,27 +249,6 @@ class _CommuterPageState extends State<CommuterPage>
     }
   }
 
-  Future<void> _confirmBoarding() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    if (_demandInProgress) return;
-
-    setState(() => _demandInProgress = true);
-    try {
-      final commuterDoc = _firestore.collection('commuters').doc(user.uid);
-      await commuterDoc.set({
-        'demand': 'LOW',
-        'boardedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      if (mounted) setState(() => _demandRequested = false);
-      _addNotification('Ride request removed. Have a safe trip aboard!');
-    } catch (e) {
-      _addNotification('Failed to confirm boarding: $e');
-    } finally {
-      if (mounted) setState(() => _demandInProgress = false);
-    }
-  }
-
   Future<bool> _requestLocationAccess() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -472,36 +451,66 @@ class _CommuterPageState extends State<CommuterPage>
               ? Colors.red
               : Colors.blue;
 
+          final availableSeats = (meta['availableSeats'] as int?) ?? 0;
+          final totalCapacity = (meta['totalCapacity'] as int?) ?? 0;
+          final passengersOnboard = totalCapacity > 0
+              ? (totalCapacity - availableSeats).clamp(0, totalCapacity)
+              : null;
+          final passengerLabel = passengersOnboard != null
+              ? '$passengersOnboard/$totalCapacity'
+              : null;
+
           return Marker(
             point: pos,
             width: 80,
             height: 80,
             child: GestureDetector(
               onTap: () {
-                final routeDirection =
-                    meta['route'] as String? ?? 'Unknown route';
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('$fullName ($plateNumber) — $routeDirection'),
-                  ),
-                );
+                _showDriverBoardingDialog(context, id, meta);
               },
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: markerColor,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    child: const Icon(
-                      Icons.directions_car,
-                      color: Colors.white,
-                      size: 20,
-                    ),
+                  Stack(
+                    alignment: Alignment.center,
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: markerColor,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.directions_car,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                      if (passengerLabel != null)
+                        Positioned(
+                          top: -6,
+                          right: -6,
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: markerColor, width: 1),
+                            ),
+                            child: Text(
+                              passengerLabel,
+                              style: TextStyle(
+                                color: markerColor,
+                                fontSize: 8,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                   Text(
                     plateNumber,
@@ -517,6 +526,113 @@ class _CommuterPageState extends State<CommuterPage>
         })
         .whereType<Marker>()
         .toList();
+  }
+
+  void _showDriverBoardingDialog(
+    BuildContext context,
+    String driverId,
+    Map<String, dynamic> meta,
+  ) {
+    final fullName = meta['fullName'] as String? ?? 'Driver';
+    final plateNumber = meta['plateNumber'] as String? ?? 'Unknown';
+    final routeDirection = meta['route'] as String? ?? 'Unknown route';
+    final availableSeats = (meta['availableSeats'] as int?) ?? 0;
+    final totalCapacity = (meta['totalCapacity'] as int?) ?? 0;
+    final passengersOnboard = totalCapacity > 0
+        ? (totalCapacity - availableSeats).clamp(0, totalCapacity)
+        : null;
+
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('$fullName — $plateNumber'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Route: $routeDirection'),
+              const SizedBox(height: 10),
+              Text(
+                'Available seats: $availableSeats' +
+                    (totalCapacity > 0 ? ' / $totalCapacity total' : ''),
+              ),
+              if (passengersOnboard != null) ...[
+                const SizedBox(height: 4),
+                Text('Onboard: $passengersOnboard'),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+            if (availableSeats > 0)
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.of(context).pop();
+                  await _confirmBoardingWithDriver(context, driverId);
+                },
+                child: const Text('Confirm Boarding'),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmBoardingWithDriver(
+    BuildContext context,
+    String driverId,
+  ) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    final driverRef = _firestore.collection('drivers').doc(driverId);
+    final commuterRef = _firestore.collection('commuters').doc(user.uid);
+
+    try {
+      await _firestore.runTransaction((tx) async {
+        final driverSnapshot = await tx.get(driverRef);
+        if (!driverSnapshot.exists) {
+          throw Exception('Driver no longer available.');
+        }
+
+        final driverData = driverSnapshot.data() ?? {};
+        final availableSeats =
+            (driverData['availableSeats'] as num?)?.toInt() ?? 0;
+        if (availableSeats <= 0) {
+          throw Exception('No available seats.');
+        }
+
+        tx.update(driverRef, {
+          'availableSeats': availableSeats - 1,
+          'lastBoardedAt': FieldValue.serverTimestamp(),
+        });
+
+        tx.set(commuterRef, {
+          'demand': 'LOW',
+          'shareOnDriverMap': false,
+          'boardedAt': FieldValue.serverTimestamp(),
+          'boardedDriverId': driverId,
+        }, SetOptions(merge: true));
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Boarding confirmed.')));
+      }
+      _addNotification('Boarding confirmed and driver seat count updated.');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to confirm boarding: $e')),
+        );
+      }
+      _addNotification('Failed to confirm boarding: $e');
+    }
   }
 
   LatLng _lerpLatLng(LatLng a, LatLng b, double t) {
@@ -863,22 +979,8 @@ class _CommuterPageState extends State<CommuterPage>
             ),
             if (_demandRequested) ...[
               const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _demandInProgress ? null : _confirmBoarding,
-                  icon: const Icon(Icons.check),
-                  label: const Text('Confirm Boarding'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
               Text(
-                'Tap Confirm Boarding only when you have boarded the jeepney. The request will be removed.',
+                'A driver request is active. Tap a jeepney marker on the map to confirm boarding.',
                 style: TextStyle(color: Colors.black54),
               ),
             ],
@@ -1197,6 +1299,8 @@ class _CommuterPageState extends State<CommuterPage>
               'fullName': data['fullName'] as String? ?? 'Driver',
               'statusColor': data['statusColor'] as String? ?? 'blue',
               'route': data['route'] as String? ?? 'Unknown route',
+              'availableSeats': (data['availableSeats'] as num?)?.toInt() ?? 0,
+              'totalCapacity': (data['totalCapacity'] as num?)?.toInt() ?? 0,
               'gpsEnabled': gpsEnabled,
             };
 
